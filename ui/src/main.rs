@@ -1,4 +1,4 @@
-//! Spotseek: paste a Spotify link, get mp3 files. This is the Rune front end; the work is done
+//! Spotseek: paste a Spotify or SoundCloud link, get music files. This is the Rune front end; the work is done
 //! by the Rust engine (`spotseek-backend --cli <url> --events`, in `engine/`), which it runs as a
 //! child process.
 //!
@@ -105,6 +105,21 @@ fn demo(s: &mut State) {
 
 fn scene_pasted(s: &mut State) {
     s.link.replace_text("https://open.spotify.com/playlist/37i9dQZF1DX4sWnBi0yS4q");
+}
+
+/// A SoundCloud set pasted.
+fn scene_pasted_soundcloud(s: &mut State) {
+    s.link.replace_text("https://soundcloud.com/forss/sets/soulhack");
+}
+
+/// A SoundCloud set, done: most from Soulseek, two from SoundCloud itself, one from YouTube.
+fn scene_done_soundcloud(s: &mut State) {
+    scene_done(s);
+    s.running_link = "https://soundcloud.com/forss/sets/soulhack".into();
+    for i in [2, 9] {
+        s.tracks[i].soundcloud = true;
+        s.tracks[i].peer = "SoundCloud".into();
+    }
 }
 
 fn scene_invalid(s: &mut State) {
@@ -449,6 +464,8 @@ fn main() {
             ("settings-signed-out", scene_settings_signed_out),
             ("idle-signed-out", scene_idle_signed_out),
             ("waiting", scene_waiting),
+            ("pasted-soundcloud", scene_pasted_soundcloud),
+            ("done-soundcloud", scene_done_soundcloud),
             ("settings", scene_settings),
             ("settings-flac", scene_settings_flac),
             ("manual", scene_manual),

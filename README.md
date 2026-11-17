@@ -1,8 +1,10 @@
 # Spotseek
 
 A small desktop app that downloads music as mp3, m4a (AAC) or FLAC files. Paste a
-public Spotify **playlist**, **album**, or **track** link. Tracks download from
-Soulseek first (also FLAC and WAV), the gaps are filled from YouTube Music, and
+public Spotify **playlist**, **album**, or **track** link, or a SoundCloud **track**,
+**set**, or a profile's **tracks** or **likes** page. Tracks download from Soulseek
+first (also FLAC and WAV); a SoundCloud track Soulseek does not have comes from its
+own SoundCloud page; the gaps are filled from YouTube Music; and
 every file becomes the format you choose in the settings, at the bitrate you
 choose (FLAC has none: it is lossless). The sound never goes up: a 192 kbps mp3
 stays 192, it is not made a bigger file that sounds the same.
@@ -142,6 +144,10 @@ How the engine works (`engine/src`):
   m4a) are encoded at no more than their own bitrate. For FLAC a FLAC is copied and anything
   else is encoded to FLAC; the ranking then prefers lossless files.
 - `spotify.rs`, `youtube.rs` - the public Spotify pages, and yt-dlp.
+- `soundcloud.rs` - SoundCloud links, read with yt-dlp: the artist and the title come from
+  "Artist - Title" uploads (else the uploader is the artist), without "[FREE DOWNLOAD]" and the
+  like. When Soulseek has no file, the track's own SoundCloud audio is downloaded; a
+  SoundCloud Go+ track gives only a 30-second preview, so that one goes to YouTube Music.
 
 In the window:
 

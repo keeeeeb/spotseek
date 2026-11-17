@@ -80,6 +80,8 @@ pub struct Track {
     pub total: u64,
     pub peer: String,
     pub youtube: bool,
+    /// The file came from the track's own SoundCloud page.
+    pub soundcloud: bool,
     pub url: String,
     pub bitrate: u32,
     /// The mp3 in the output folder, after the run.
@@ -117,6 +119,11 @@ impl Track {
         !self.part.is_empty() && matches!(self.format.as_str(), "mp3" | "flac" | "wav" | "aif" | "aiff")
     }
 
+    /// The file was streamed (YouTube Music or SoundCloud), not sent by a Soulseek peer.
+    pub fn streamed(&self) -> bool {
+        self.youtube || self.soundcloud
+    }
+
     /// How far this track is, 0 to 1.
     pub fn progress(&self) -> f32 {
         match self.state {
@@ -130,7 +137,7 @@ impl Track {
     }
 
     fn saved(&self) -> SavedTrack {
-        let size = if self.youtube || self.total == 0 { std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0) } else { self.total };
+        let size = if self.streamed() || self.total == 0 { std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0) } else { self.total };
         SavedTrack {
             artist: self.artist.clone(),
             title: self.title.clone(),
@@ -138,7 +145,7 @@ impl Track {
             id: self.id.clone(),
             duration: self.duration,
             state: if self.state == TState::Done { "done" } else { "missing" }.into(),
-            source: if self.youtube { "youtube" } else if self.state == TState::Done { "soulseek" } else { "" }.into(),
+            source: if self.soundcloud { "soundcloud" } else if self.youtube { "youtube" } else if self.state == TState::Done { "soulseek" } else { "" }.into(),
             peer: self.peer.clone(),
             url: self.url.clone(),
             bitrate: self.bitrate,
@@ -402,9 +409,9 @@ impl State {
         self.settings_open = false;
     }
 
-    /// The pasted text as a Spotify link, or None.
+    /// The pasted text as a Spotify or SoundCloud link, or None.
     pub fn link_url(&self) -> Option<String> {
-        spotify_link(&self.link.text)
+        spotify_link(&self.link.text).or_else(|| soundcloud_link(&self.link.text))
     }
 
     /// Starts a session for the pasted link.
@@ -413,13 +420,13 @@ impl State {
             return;
         }
         let Some(url) = self.link_url() else {
-            self.notice = self.lang.t("THAT IS NOT A SPOTIFY LINK", "ESO NO ES UN LINK DE SPOTIFY").into();
+            self.notice = self.lang.t("THAT IS NOT A SPOTIFY OR SOUNDCLOUD LINK", "ESO NO ES UN LINK DE SPOTIFY NI DE SOUNDCLOUD").into();
             return;
         };
         self.reset_run();
         self.show_history = false;
         self.phase = Phase::Running;
-        self.stage = "spotify".into();
+        self.stage = if url.contains("soundcloud.com") { "soundcloud" } else { "spotify" }.into();
         self.running_link = url;
         self.session_started = history::now();
         self.session_id = session_id();
@@ -477,7 +484,7 @@ impl State {
         );
         match started {
             Ok(run) => {
-                self.stage = "spotify".into();
+                self.stage = if self.running_link.contains("soundcloud.com") { "soundcloud" } else { "spotify" }.into();
                 self.run = Some(run);
             }
             Err(e) => {
@@ -615,6 +622,10 @@ impl State {
                 }
                 if e.source == "youtube" {
                     t.youtube = true;
+                    t.soundcloud = false;
+                }
+                if e.source == "soundcloud" {
+                    t.soundcloud = true;
                 }
                 if st == TState::Done {
                     t.finished = history::now();
@@ -622,7 +633,7 @@ impl State {
                         let secs = self.media.growing(&t.part).map_or(t.duration as f64, |g| g.secs);
                         self.media.set_growing(&t.part, t.total, t.total, secs);
                     }
-                    if t.total > 0 && !t.youtube {
+                    if t.total > 0 && !t.streamed() {
                         // Progress comes a few times a second; the end of a file can
                         // arrive only with "done".
                         if t.total > t.bytes {
@@ -697,7 +708,7 @@ impl State {
     fn collection(&mut self, e: Event) {
         let only: Vec<usize> = if let Some(only) = self.next_only.take() {
             if e.tracks.len() != self.tracks.len() {
-                self.error = "the track list changed on Spotify; paste the link again".into();
+                self.error = "the track list changed; paste the link again".into();
                 if let Some(r) = self.run.as_mut() {
                     r.answer(&[]);
                 }
@@ -1247,6 +1258,7 @@ impl State {
             TState::Done => l.t("DOWNLOADED", "DESCARGADA").into(),
             TState::Failed => l.t("NOT ON SOULSEEK", "NO ESTÁ EN SOULSEEK").into(),
             TState::YtSearch => l.t("SEARCHING YOUTUBE MUSIC", "BUSCANDO EN YOUTUBE MUSIC").into(),
+            TState::YtDownload if t.soundcloud => l.t("DOWNLOADING FROM SOUNDCLOUD", "DESCARGANDO DE SOUNDCLOUD").into(),
             TState::YtDownload => l.t("DOWNLOADING FROM YOUTUBE", "DESCARGANDO DE YOUTUBE").into(),
             TState::Missing => l.t("NOT FOUND", "NO ENCONTRADA").into(),
             TState::Have => l.t("ALREADY IN YOUR FOLDER", "YA ESTÁ EN TU CARPETA").into(),
@@ -1272,7 +1284,7 @@ impl State {
             album: t.album.clone(),
             duration: t.duration,
             status,
-            source: if t.youtube { "youtube" } else if t.peer.is_empty() { "" } else { "soulseek" }.into(),
+            source: if t.soundcloud { "soundcloud" } else if t.youtube { "youtube" } else if t.peer.is_empty() { "" } else { "soulseek" }.into(),
             peer: t.peer.clone(),
             url: t.url.clone(),
             bitrate: t.bitrate,
@@ -1549,10 +1561,42 @@ pub fn spotify_link(text: &str) -> Option<String> {
     }
 }
 
+/// Accepts `soundcloud.com/<user>/<track>`, `…/sets/<name>`, `…/tracks`, `…/likes` (also
+/// `m.` and `www.`, with or without the scheme) and `on.soundcloud.com/<code>` short links.
+/// Returns a clean `https://` link (no `?si=` or other query).
+pub fn soundcloud_link(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        return None;
+    }
+    let rest = t.strip_prefix("https://").or_else(|| t.strip_prefix("http://")).unwrap_or(t);
+    let rest = rest.split(['?', '#']).next()?;
+    let (host, path) = rest.split_once('/')?;
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    match host.to_ascii_lowercase().as_str() {
+        "on.soundcloud.com" if parts.len() == 1 => Some(format!("https://on.soundcloud.com/{}", parts[0])),
+        // A profile alone is not enough (which of its pages?): it needs a track, a set, or its tracks/likes.
+        "soundcloud.com" | "www.soundcloud.com" | "m.soundcloud.com" if parts.len() >= 2 && !["discover", "search", "you", "upload", "stream"].contains(&parts[0]) => {
+            Some(format!("https://soundcloud.com/{}", parts.join("/")))
+        }
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soundcloud_links() {
+        assert_eq!(soundcloud_link("https://soundcloud.com/forss/flickermood?si=abc&utm_source=x").unwrap(), "https://soundcloud.com/forss/flickermood");
+        assert_eq!(soundcloud_link(" m.soundcloud.com/forss/sets/soulhack ").unwrap(), "https://soundcloud.com/forss/sets/soulhack");
+        assert_eq!(soundcloud_link("https://on.soundcloud.com/AbC123").unwrap(), "https://on.soundcloud.com/AbC123");
+        assert!(soundcloud_link("https://soundcloud.com/forss").is_none(), "a profile alone");
+        assert!(soundcloud_link("https://soundcloud.com/discover/sets/x").is_none());
+        assert!(soundcloud_link("https://open.spotify.com/track/4aawyAB9vmqN3uQ7FjRGTy").is_none());
+        assert!(soundcloud_link("https://soundcloud.com.example/a/b").is_none());
+    }
 
     #[test]
     fn spotify_links() {

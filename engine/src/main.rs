@@ -1,6 +1,6 @@
 //! spotseek-backend: the download engine of the Spotseek app window.
 //!
-//! `spotseek-backend --cli <spotify-url> -o <dir> --events` writes one JSON event per line (see
+//! `spotseek-backend --cli <spotify-or-soundcloud-url> -o <dir> --events` writes one JSON event per line (see
 //! `events.rs`) and stops when its stdin closes. Stdin lines it reads: the Soulseek password
 //! first (with `--pass-stdin`), then `{"only":[0,2]}` (with `--ask`), `{"stop":true}`, and
 //! `{"pick":{"i":3,"id":7}}` or `{"pick":{"i":3,"yt":true}}`.
@@ -15,6 +15,7 @@ mod events;
 mod pipeline;
 mod rank;
 mod slsk;
+mod soundcloud;
 mod spotify;
 mod store;
 mod update;
@@ -26,7 +27,7 @@ use std::path::PathBuf;
 use events::{Emitter, Event};
 use pipeline::{Control, Options};
 
-const HELP: &str = "spotseek-backend --cli <spotify-url> -o <dir> [options]
+const HELP: &str = "spotseek-backend --cli <spotify-or-soundcloud-url> -o <dir> [options]
 
   --format F         the files made: mp3, m4a (AAC) or flac (default mp3)
   --bitrate N        mp3 and m4a kbps: 320, 256, 192 or 128 (default 320)

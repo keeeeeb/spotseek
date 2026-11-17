@@ -126,6 +126,27 @@ pub async fn probe(ffmpeg: &str, path: &Path) -> Result<Probe> {
     parse_probe(&text).ok_or_else(|| anyhow!("no audio stream: {}", text.lines().last().unwrap_or("").trim()))
 }
 
+/// The length of the audio in seconds, from `ffmpeg -i`.
+pub async fn duration(ffmpeg: &str, path: &Path) -> Option<u32> {
+    let out = tokio::time::timeout(
+        Duration::from_secs(30),
+        command(ffmpeg).args(["-hide_banner", "-nostdin", "-i"]).arg(path).stdout(Stdio::null()).stderr(Stdio::piped()).output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    parse_duration(&String::from_utf8_lossy(&out.stderr))
+}
+
+/// `  Duration: 00:03:21.03, start: …` → 201.
+pub fn parse_duration(text: &str) -> Option<u32> {
+    let l = text.lines().find(|l| l.trim_start().starts_with("Duration:"))?;
+    let v = l.trim_start()["Duration:".len()..].trim_start().split(',').next()?.trim();
+    let mut it = v.split(':');
+    let (h, m, s): (u32, u32, f64) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?);
+    Some(h * 3600 + m * 60 + s.round() as u32)
+}
+
 /// "123 kb/s" (or "123 kb/s (default)") → 123.
 fn kbps_in(part: &str) -> Option<u32> {
     let mut w = part.split_whitespace();
@@ -343,6 +364,9 @@ mod tests {
         let flac = "  Duration: 00:00:03.00, start: 0.000000, bitrate: 118 kb/s\n  Stream #0:0: Audio: flac, 44100 Hz, mono, s16";
         assert!(parse_probe(flac).unwrap().lossless);
         assert_eq!(parse_probe("x.jpg: Invalid data found when processing input"), None);
+        assert_eq!(parse_duration(mp3), Some(201));
+        assert_eq!(parse_duration("  Duration: 01:00:29.60, start: 0"), Some(3630));
+        assert_eq!(parse_duration("  Duration: N/A, bitrate: N/A"), None);
     }
 
     #[test]

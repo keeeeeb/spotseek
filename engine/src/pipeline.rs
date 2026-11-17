@@ -15,9 +15,10 @@ use crate::convert::{self, Format, Tags, Tools, safe_name};
 use crate::events::{Emitter, Event, TrackInfo};
 use crate::rank::{self, Ranker};
 use crate::slsk::{self, Client, ConnectError, Progress};
+use crate::soundcloud;
 use crate::spotify::{self, Track};
 use crate::store::{Store, folder_of};
-use crate::youtube::YtDlp;
+use crate::youtube::{Candidate, YtDlp};
 use std::collections::{HashMap, HashSet};
 
 pub struct Options {
@@ -211,9 +212,15 @@ async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver
         });
     }
 
-    emit.emit(Event::phase("spotify"));
-    emit.emit(Event::log("Reading Spotify metadata..."));
-    let coll = spotify::extract(&o.input).await.map_err(|e| anyhow!("spotify: {e}"))?;
+    let coll = if soundcloud::is_link(&o.input) {
+        emit.emit(Event::phase("soundcloud"));
+        emit.emit(Event::log("Reading SoundCloud metadata..."));
+        soundcloud::extract(&YtDlp { bin: o.ytdlp.clone() }, &o.input, o.limit).await.map_err(|e| anyhow!("soundcloud: {e}"))?
+    } else {
+        emit.emit(Event::phase("spotify"));
+        emit.emit(Event::log("Reading Spotify metadata..."));
+        spotify::extract(&o.input).await.map_err(|e| anyhow!("spotify: {e}"))?
+    };
     let mut tracks = coll.tracks.clone();
     if o.limit > 0 && tracks.len() > o.limit {
         tracks.truncate(o.limit);
@@ -465,6 +472,11 @@ async fn track_job(ctx: Arc<Ctx>, i: usize, t: Track, mut picks: mpsc::Unbounded
     let end = match end {
         Some(e) => e,
         None if ctx.stop.is_cancelled() => End::Stopped,
+        // A SoundCloud track: its own audio, then YouTube Music.
+        None if !t.url.is_empty() => match soundcloud(&ctx, i, &t).await {
+            End::Missing if ctx.o.fallback && !ctx.stop.is_cancelled() => youtube(&ctx, i, &t).await,
+            e => e,
+        },
         None if ctx.o.fallback => youtube(&ctx, i, &t).await,
         None => End::Missing,
     };
@@ -975,6 +987,46 @@ async fn youtube(ctx: &Arc<Ctx>, i: usize, t: &Track) -> End {
     }
 }
 
+/// A SoundCloud track that Soulseek does not have: the audio of its own page.
+async fn soundcloud(ctx: &Arc<Ctx>, i: usize, t: &Track) -> End {
+    let _slot = tokio::select! {
+        p = ctx.downloads.acquire() => p,
+        _ = ctx.stop.cancelled() => return End::Stopped,
+    };
+    let ev = |state: &str, total: u64| Event { source: "soundcloud".into(), peer: "SoundCloud".into(), url: t.url.clone(), total, ..Event::track(i, state) };
+    ctx.emit.emit(ev("yt_download", 0));
+    let dir = ctx.work.join("soundcloud");
+    let cand = Candidate { url: t.url.clone(), ..Default::default() };
+    let name = i.to_string();
+    let got = tokio::select! {
+        r = ctx.yt.download(&cand, &dir, &name) => r,
+        _ = ctx.stop.cancelled() => return End::Stopped,
+    };
+    let path = match got {
+        Ok(p) => p,
+        Err(e) => {
+            ctx.note("sc_failed", "warn", Some(i), "", "", 0, 0, format!("{} - {}: SoundCloud download failed: {e}", t.artist, t.title));
+            return End::Missing;
+        }
+    };
+    // SoundCloud Go+ tracks give only a 30-second preview to others.
+    let secs = convert::duration(&ctx.tools.ffmpeg, &path).await.unwrap_or(0);
+    if is_preview(secs, t.duration) {
+        let _ = tokio::fs::remove_file(&path).await;
+        ctx.note("sc_preview", "warn", Some(i), "", "", 0, secs, format!("{} - {}: SoundCloud gives only a {secs} s preview", t.artist, t.title));
+        return End::Missing;
+    }
+    let total = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    ctx.emit.emit(ev("done", total));
+    ctx.note("sc_done", "good", Some(i), "", "", 0, 0, format!("{} - {}: downloaded from SoundCloud", t.artist, t.title));
+    finish(ctx, i, t, &path).await
+}
+
+/// A file much shorter than the track (`secs` 0: not known, not a preview).
+fn is_preview(secs: u32, length: u32) -> bool {
+    secs > 0 && length > 60 && secs * 10 < length * 7
+}
+
 /// YouTube asks yt-dlp to prove it is not a bot (too many requests from this address).
 fn yt_blocked(e: &str) -> bool {
     e.contains("not a bot") || e.contains("Sign in to confirm") || e.contains("HTTP Error 429")
@@ -1131,5 +1183,18 @@ impl Drop for Busy {
                 b.remove(&self.user);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn previews() {
+        assert!(is_preview(30, 213));
+        assert!(!is_preview(212, 213));
+        assert!(!is_preview(0, 213), "not known");
+        assert!(!is_preview(30, 40), "a short track");
     }
 }

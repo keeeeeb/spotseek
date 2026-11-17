@@ -20,7 +20,7 @@ pub struct SavedTrack {
     pub duration: u32,
     /// "done" or "missing".
     pub state: String,
-    /// "soulseek" or "youtube".
+    /// "soulseek", "youtube" or "soundcloud".
     pub source: String,
     pub peer: String,
     /// The YouTube page of a fallback download.

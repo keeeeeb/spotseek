@@ -1,3 +1,14 @@
+## New in 0.2.5
+
+- **SoundCloud links.** Paste a SoundCloud track, set, or a profile's tracks or likes. Each song
+  is looked for on Soulseek first, like a Spotify song. When Soulseek does not have it, it comes
+  from SoundCloud itself (marked SC), and YouTube Music is the last try. SoundCloud Go+ songs
+  give only a 30-second preview, so those are never saved as the song.
+- **Choose the format: MP3, M4A or FLAC.** In SETTINGS, FORMAT sets the files Spotseek makes.
+  M4A (AAC) uses the bitrate you choose, like MP3. FLAC is lossless: Spotseek looks for lossless
+  files first and keeps their full sound. When only an mp3 or YouTube audio is found, it is
+  saved as FLAC with the sound it has (it is not made better).
+
 ## New in 0.2.4
 
 - **Fixed: "spotify: bad entity".** Some playlists did not open at all: Spotify sends no size for

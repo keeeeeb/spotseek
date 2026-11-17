@@ -19,7 +19,8 @@
 #   - LGPL only: there is no --enable-gpl and no --enable-nonfree.
 #   - --disable-everything, then only the parts that the engine and yt-dlp
 #     use (see the lists below): decode the usual audio formats, keep the
-#     cover art (stream copy), encode MP3 with LAME, and the yt-dlp fixups
+#     cover art (stream copy), encode MP3 with LAME, AAC (m4a) and FLAC with
+#     the encoders of FFmpeg itself, and the yt-dlp fixups
 #     (`-c copy -f mp4`, the aac_adtstoasc filter).
 #   - --disable-autodetect: it links only to system libraries (libSystem on
 #     macOS, the Windows DLLs that every Windows has, nothing on Linux).
@@ -69,8 +70,8 @@ DECODERS=(
   mjpeg png bmp
 )
 DEMUXERS=(mp3 flac wav aiff ape wv mov ogg matroska asf aac mpegts)
-MUXERS=(mp3 mp4 ipod mov null)
-ENCODERS=(libmp3lame)
+MUXERS=(mp3 mp4 ipod mov flac null)
+ENCODERS=(libmp3lame aac flac)
 PARSERS=(mpegaudio flac aac opus vorbis mjpeg png bmp)
 BSFS=(aac_adtstoasc null)
 FILTERS=(abuffer abuffersink aformat anull aresample)
@@ -259,7 +260,7 @@ echo "==> ffmpeg $FFMPEG_VERSION"
       exit 1
     }
   # Stop if configure did not turn on a part that we asked for.
-  for want in libmp3lame_encoder aac_adtstoasc_bsf png_decoder mov_muxer aresample_filter; do
+  for want in libmp3lame_encoder aac_encoder flac_encoder flac_muxer ipod_muxer aac_adtstoasc_bsf png_decoder mov_muxer aresample_filter; do
     grep -q "^#define CONFIG_$(echo "$want" | tr a-z A-Z) 1" config_components.h || {
       echo "error: configure did not enable $want" >&2
       exit 1

@@ -1,5 +1,5 @@
 //! The fallback: find the track on YouTube Music with yt-dlp and download its best audio. The
-//! converter makes the mp3 (never above the bitrate YouTube has).
+//! converter makes the file (never above the bitrate YouTube has).
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

@@ -1,3 +1,10 @@
+## New in 0.2.5
+
+- **Choose the format: MP3, M4A or FLAC.** In SETTINGS, FORMAT sets the files Spotseek makes.
+  M4A (AAC) uses the bitrate you choose, like MP3. FLAC is lossless: Spotseek looks for lossless
+  files first and keeps their full sound. When only an mp3 or YouTube audio is found, it is
+  saved as FLAC with the sound it has (it is not made better).
+
 ## New in 0.2.4
 
 - **Fixed: "spotify: bad entity".** Some playlists did not open at all: Spotify sends no size for

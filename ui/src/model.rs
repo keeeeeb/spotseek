@@ -451,6 +451,7 @@ impl State {
         let req = backend::Request {
             url: self.running_link.clone(),
             dir: self.settings.dir.clone(),
+            format: self.settings.format.clone(),
             bitrate: self.settings.bitrate.clone(),
             fallback: self.settings.fallback,
             user: match &self.account {
@@ -1406,7 +1407,7 @@ impl State {
             self.stage = "convert".into();
             let k = ((e - last_end) / 1.6 * n as f64) as usize;
             self.convert = (k.min(n), n);
-            self.last_log = format!("Normalizing to mp3 {}kbps...", self.settings.bitrate);
+            self.last_log = format!("Converting to {}...", self.settings.quality_label());
             if e > last_end + 1.8 {
                 self.demo_t0 = None;
                 self.files = self.count(TState::Done);

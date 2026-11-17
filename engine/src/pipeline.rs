@@ -1,6 +1,6 @@
 //! One run: read the Spotify list, then for each track at the same time: search Soulseek, rank
 //! the answers, download the best file (the next one when it fails or is too slow), convert it
-//! to mp3 at once, and fall back to YouTube Music when Soulseek has nothing.
+//! (to mp3, m4a or flac) at once, and fall back to YouTube Music when Soulseek has nothing.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::convert::{self, Tags, Tools, safe_name};
+use crate::convert::{self, Format, Tags, Tools, safe_name};
 use crate::events::{Emitter, Event, TrackInfo};
 use crate::rank::{self, Ranker};
 use crate::slsk::{self, Client, ConnectError, Progress};
@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 pub struct Options {
     pub input: String,
     pub out_dir: PathBuf,
+    pub format: Format,
     pub bitrate: u32,
     pub fallback: bool,
     /// The Soulseek account, or None for YouTube Music only.
@@ -489,7 +490,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
     let c = &mut client;
     let manual = ctx.o.manual;
     ctx.emit.emit(Event::track(i, "searching"));
-    let mut ranker = Ranker::new(t.clone(), ctx.o.bitrate);
+    let mut ranker = Ranker::new(t.clone(), ctx.o.format, ctx.o.bitrate);
     ranker.known = ctx.store.lock().unwrap().peers.iter().filter(|(_, p)| p.hits > 0).map(|(u, _)| u.clone()).collect();
     let (tx, mut answers) = mpsc::unbounded_channel();
     let queries = rank::queries(t);
@@ -911,7 +912,7 @@ async fn finish(ctx: &Arc<Ctx>, i: usize, t: &Track, src: &Path) -> End {
         if b.is_empty() { "track".to_string() } else { b }
     };
     let tags = Tags { artist: t.artist.clone(), title: t.title.clone(), album: t.album.clone() };
-    match convert::to_mp3(&ctx.tools, src, &ctx.o.out_dir, &base, ctx.o.bitrate, &tags).await {
+    match convert::convert(&ctx.tools, src, &ctx.o.out_dir, &base, ctx.o.format, ctx.o.bitrate, &tags).await {
         Ok((dest, kbps)) => {
             ctx.files.fetch_add(1, Ordering::SeqCst);
             ctx.emit.emit(Event { i: Some(i), path: dest.to_string_lossy().into_owned(), bitrate: kbps, ..Event::new("file") });

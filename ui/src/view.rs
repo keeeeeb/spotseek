@@ -148,7 +148,7 @@ fn idle(s: &State, size: [f32; 2]) -> El {
     let no_account = s.account == Account::None;
     let hint_color = if has_text && !ok { red() } else { muted() };
     let footer = row().w_full().h(40.0).center_y().justify_between()
-        .child(text(format!("{} · MP3 {}", s.settings.short_dir(), s.settings.bitrate)).key("where").font(mono(14.0, 500.0)).color(ink())
+        .child(text(format!("{} · {}", s.settings.short_dir(), s.settings.quality_label())).key("where").font(mono(14.0, 500.0)).color(ink())
             .cursor(Cursor::Pointer).on_press(|s: &mut State| s.settings_open = true))
         .child(row().gap(28.0).center_y()
             .child(pick_toggle(s))
@@ -1383,10 +1383,21 @@ fn settings_panel(s: &State) -> El {
             .fill(if on { ink() } else { Color::TRANSPARENT })
             .child(text(label.to_string()).font(mono(14.0, 600.0)).color(if on { paper() } else { ink() }))
     };
-    let mut quality = row().gap(0.0);
-    for b in ["320", "256", "192", "128"] {
-        quality = quality.child(choice(format!("q{b}"), b, s.settings.bitrate == b).w(70.0).on_press(move |s: &mut State| s.settings.bitrate = b.into()));
+    let mut format = row().gap(0.0);
+    for (k, name) in [("mp3", "MP3"), ("m4a", "M4A"), ("flac", "FLAC")] {
+        format = format.child(choice(format!("f-{k}"), name, s.settings.format == k).w(70.0).on_press(move |s: &mut State| s.settings.format = k.into()));
     }
+    let lossless = s.settings.format == "flac";
+    let quality = if lossless {
+        // FLAC keeps all the sound: there is no bitrate to choose.
+        row().h(40.0).center_y().child(text(l.t("LOSSLESS · NO BITRATE", "SIN PÉRDIDA · SIN BITRATE")).font(mono(14.0, 600.0)).color(muted()))
+    } else {
+        let mut q = row().gap(0.0);
+        for b in ["320", "256", "192", "128"] {
+            q = q.child(choice(format!("q{b}"), b, s.settings.bitrate == b).w(70.0).on_press(move |s: &mut State| s.settings.bitrate = b.into()));
+        }
+        q
+    };
     let mut lang = row().gap(0.0);
     for (k, name) in [("auto", l.t("SYSTEM", "SISTEMA")), ("en", "ENGLISH"), ("es", "ESPAÑOL")] {
         lang = lang.child(choice(format!("lang-{k}"), name, s.settings.lang == k).on_press(move |s: &mut State| s.set_lang(k)));
@@ -1412,17 +1423,21 @@ fn settings_panel(s: &State) -> El {
                 });
             })))
         .child(row().w_full().gap(28.0)
-            .child(col().gap(8.0).child(label(l.t("MP3 QUALITY (KBPS)", "CALIDAD DEL MP3 (KBPS)"))).child(quality))
-            .child(col().gap(8.0).child(label(l.t("LANGUAGE", "IDIOMA"))).child(lang)))
+            .child(col().gap(8.0).child(label(l.t("FORMAT", "FORMATO"))).child(format))
+            .child(col().gap(8.0).child(label(l.t("QUALITY (KBPS)", "CALIDAD (KBPS)"))).child(quality)))
+
         .child(label(l.t("WHICH FILE TO DOWNLOAD", "QUÉ ARCHIVO DESCARGAR")))
         .child(row().gap(0.0)
             .child(choice("files-auto".into(), l.t("THE BEST ONE, BY ITSELF", "EL MEJOR, SOLO"), !s.settings.manual).on_press(|s: &mut State| s.settings.manual = false))
             .child(choice("files-manual".into(), l.t("I PICK FOR EACH SONG", "ELIJO YO EN CADA CANCIÓN"), s.settings.manual).on_press(|s: &mut State| s.settings.manual = true)))
-        .child(label(l.t("WHEN SOULSEEK CANNOT FIND A TRACK", "SI SOULSEEK NO ENCUENTRA UNA CANCIÓN")))
-        .child(row().key("fallback").gap(10.0).center_y().cursor(Cursor::Pointer).on_press(|s: &mut State| s.settings.fallback = !s.settings.fallback)
-            .child(row().size(22.0, 22.0).center().border(2.0, ink()).fill(if fb { ink() } else { Color::TRANSPARENT })
-                .child(text(if fb { "✓" } else { "" }).font(mono(13.0, 600.0)).color(paper())))
-            .child(text(l.t("TRY YOUTUBE MUSIC", "PROBAR CON YOUTUBE MUSIC")).font(mono(14.0, 600.0)).color(ink())))
+        .child(row().w_full().gap(28.0)
+            .child(col().gap(8.0)
+                .child(label(l.t("WHEN SOULSEEK CANNOT FIND A TRACK", "SI SOULSEEK NO ENCUENTRA UNA CANCIÓN")))
+                .child(row().key("fallback").h(40.0).gap(10.0).center_y().cursor(Cursor::Pointer).on_press(|s: &mut State| s.settings.fallback = !s.settings.fallback)
+                    .child(row().size(22.0, 22.0).center().border(2.0, ink()).fill(if fb { ink() } else { Color::TRANSPARENT })
+                        .child(text(if fb { "✓" } else { "" }).font(mono(13.0, 600.0)).color(paper())))
+                    .child(text(l.t("TRY YOUTUBE MUSIC", "PROBAR CON YOUTUBE MUSIC")).font(mono(14.0, 600.0)).color(ink()))))
+            .child(col().gap(8.0).child(label(l.t("LANGUAGE", "IDIOMA"))).child(lang)))
         .child(label(l.t("LISTENING", "ESCUCHAR")))
         .child(row().key("hover-play").gap(10.0).center_y().cursor(Cursor::Pointer).on_press(|s: &mut State| {
                 let on = !s.settings.hover_play;

@@ -99,6 +99,7 @@ pub fn parse(line: &str) -> Option<Event> {
 pub struct Request {
     pub url: String,
     pub dir: String,
+    pub format: String,
     pub bitrate: String,
     pub fallback: bool,
     pub user: String,
@@ -144,7 +145,7 @@ impl Run {
     ) -> Result<Run, String> {
         let bin = binary();
         let mut cmd = Command::new(&bin);
-        cmd.arg("--cli").arg(&req.url).arg("-o").arg(&req.dir).arg("--bitrate").arg(&req.bitrate).arg("--events");
+        cmd.arg("--cli").arg(&req.url).arg("-o").arg(&req.dir).arg("--format").arg(&req.format).arg("--bitrate").arg(&req.bitrate).arg("--events");
         if !req.fallback {
             cmd.arg("--no-fallback");
         }

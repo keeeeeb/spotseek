@@ -1,10 +1,11 @@
 # Spotseek
 
-A small desktop app that downloads music as mp3 files. Paste a public Spotify
-**playlist**, **album**, or **track** link. Tracks download from Soulseek first
-(also FLAC and WAV, which are made into mp3), the gaps are filled from YouTube
-Music, and every file becomes an mp3 at the bitrate you choose. The sound never
-goes up: a 192 kbps mp3 stays 192, it is not made a bigger file that sounds the same.
+A small desktop app that downloads music as mp3, m4a (AAC) or FLAC files. Paste a
+public Spotify **playlist**, **album**, or **track** link. Tracks download from
+Soulseek first (also FLAC and WAV), the gaps are filled from YouTube Music, and
+every file becomes the format you choose in the settings, at the bitrate you
+choose (FLAC has none: it is lossless). The sound never goes up: a 192 kbps mp3
+stays 192, it is not made a bigger file that sounds the same.
 
 The app opens one simple window: paste a link, watch it search and download,
 then get a poster of the tracks. Click a song to see the files Soulseek found for
@@ -135,9 +136,11 @@ How the engine works (`engine/src`):
   best file, and when it does not start in 15 seconds, stalls, or is much too slow while
   there are other files, take the next one. After six files, or when Soulseek has none,
   YouTube Music. Each track is converted the moment it lands.
-- `convert.rs` - the sound never goes up: an mp3 at or below the bitrate you chose is
-  copied as it is; a better mp3, FLAC, WAV or AIFF is encoded down to it; other lossy
-  formats (YouTube's opus, AAC) are encoded at no more than their own bitrate.
+- `convert.rs` - makes the format you chose (mp3, m4a or flac). The sound never goes up: a
+  file in that format at or below the bitrate you chose is copied as it is; a better one, or
+  FLAC, WAV or AIFF, is encoded down to it; other lossy formats (YouTube's opus, an mp3 for
+  m4a) are encoded at no more than their own bitrate. For FLAC a FLAC is copied and anything
+  else is encoded to FLAC; the ranking then prefers lossless files.
 - `spotify.rs`, `youtube.rs` - the public Spotify pages, and yt-dlp.
 
 In the window:

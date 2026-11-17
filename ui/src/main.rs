@@ -423,6 +423,12 @@ fn scene_settings(s: &mut State) {
     s.settings_open = true;
 }
 
+/// Settings with FLAC chosen: no bitrate to pick.
+fn scene_settings_flac(s: &mut State) {
+    s.settings_open = true;
+    s.settings.format = "flac".into();
+}
+
 fn main() {
     rune::prewarm_gpu();
     let spec = AppSpec {
@@ -444,6 +450,7 @@ fn main() {
             ("idle-signed-out", scene_idle_signed_out),
             ("waiting", scene_waiting),
             ("settings", scene_settings),
+            ("settings-flac", scene_settings_flac),
             ("manual", scene_manual),
             ("preview", scene_preview),
             ("playing", scene_playing),

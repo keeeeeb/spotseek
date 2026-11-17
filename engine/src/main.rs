@@ -28,7 +28,8 @@ use pipeline::{Control, Options};
 
 const HELP: &str = "spotseek-backend --cli <spotify-url> -o <dir> [options]
 
-  --bitrate N        mp3 kbps: 320, 256, 192 or 128 (default 320)
+  --format F         the files made: mp3, m4a (AAC) or flac (default mp3)
+  --bitrate N        mp3 and m4a kbps: 320, 256, 192 or 128 (default 320)
   --events           JSON events on stdout, one per line; stop when stdin closes
   --ask              with --events: read {\"only\":[indexes]} (or {}) after the collection event
   --manual           with --events: wait for {\"pick\":{\"i\":N,\"id\":K}} for each track
@@ -49,6 +50,7 @@ spotseek-backend --latest | --update               (the newest release; install 
 struct Args {
     url: String,
     out: String,
+    format: convert::Format,
     bitrate: u32,
     events: bool,
     ask: bool,
@@ -77,6 +79,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         match flag.trim_start_matches('-') {
             "cli" if flag.starts_with('-') => {}
             "o" | "out" => a.out = value("-o")?,
+            "format" => a.format = convert::Format::parse(&value("--format")?).ok_or("--format must be mp3, m4a or flac")?,
             "bitrate" => a.bitrate = value("--bitrate")?.parse().map_err(|_| "bad --bitrate")?,
             "events" => a.events = true,
             "ask" => a.ask = true,
@@ -316,6 +319,7 @@ async fn run(args: Args) -> i32 {
     let o = Options {
         input: args.url,
         out_dir: PathBuf::from(args.out),
+        format: args.format,
         bitrate: args.bitrate,
         fallback: !args.no_fallback,
         account,
@@ -358,6 +362,9 @@ mod tests {
         assert!(a.events && a.pass_stdin && a.ask && a.manual && !a.no_fallback);
         assert!(parse_args(&s(&["--cli", "--check-login", "--user", "x"])).unwrap().check_login);
         assert!(parse_args(&s(&["--bitrate", "999"])).is_err());
+        assert_eq!(parse_args(&s(&["--format", "flac"])).unwrap().format, convert::Format::Flac);
+        assert_eq!(parse_args(&s(&[])).unwrap().format, convert::Format::Mp3);
+        assert!(parse_args(&s(&["--format", "ogg"])).is_err());
         assert!(parse_args(&s(&["--what"])).is_err());
     }
 

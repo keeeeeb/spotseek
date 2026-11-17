@@ -94,7 +94,7 @@ the app yourself, these tools must be on the machine, because the self-built
 app has no bundled copies:
 
 - **yt-dlp** - for the YouTube Music fallback.
-- **ffmpeg** - for the mp3 conversion (and to read what a file is).
+- **ffmpeg** - for the conversion to mp3, m4a or FLAC (and to read what a file is).
 - **Deno** - JavaScript runtime needed by yt-dlp for full YouTube support.
 
 On macOS:
@@ -102,6 +102,81 @@ On macOS:
 ```bash
 brew install yt-dlp ffmpeg deno
 ```
+
+## Run from source
+
+To run your own copy of the code (for example a change that is not released yet):
+
+**1. Install the tools.** [Rust](https://rustup.rs) (stable), Git, and the tools from
+[Requirements](#requirements):
+
+```bash
+# macOS
+brew install yt-dlp ffmpeg deno
+# Ubuntu / Debian (also the libraries the window needs)
+sudo apt-get install -y ffmpeg pkg-config libasound2-dev libdbus-1-dev \
+  libwayland-dev libxkbcommon-dev libgl1-mesa-dev xorg-dev
+pipx install yt-dlp        # or: python3 -m pip install --user yt-dlp
+curl -fsSL https://deno.land/install.sh | sh
+```
+
+On Windows: install Rust with the MSVC toolchain, then the tools:
+
+```powershell
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg
+winget install DenoLand.Deno
+```
+
+**2. Get the code.**
+
+```bash
+git clone https://github.com/kevintrankt/spotseek
+cd spotseek
+# To run a branch that is not merged yet: git checkout <branch-name>
+```
+
+**3. Build the engine, then start the window.** The window runs the engine as its
+backend; `SPOTSEEK_BACKEND` tells it where your freshly built one is.
+`SPOTSEEK_NO_UPDATE_CHECK=1` keeps the window from offering to replace your build
+with the latest official release.
+
+macOS and Linux:
+
+```bash
+(cd engine && cargo build --release)
+cd ui
+SPOTSEEK_BACKEND="$(pwd)/../engine/target/release/spotseek-backend" \
+SPOTSEEK_NO_UPDATE_CHECK=1 cargo run --release
+```
+
+Windows (PowerShell):
+
+```powershell
+cd engine; cargo build --release; cd ..
+cd ui
+$env:SPOTSEEK_BACKEND = "$PWD\..\engine\target\release\spotseek-backend.exe"
+$env:SPOTSEEK_NO_UPDATE_CHECK = "1"
+cargo run --release
+```
+
+The first build downloads the Rust libraries and takes a few minutes; later runs
+start in seconds. Paste a Spotify or SoundCloud link, and choose the folder, the
+format (MP3, M4A or FLAC) and the bitrate in SETTINGS.
+
+**Without the window**, the engine alone downloads a link from the command line:
+
+```bash
+engine/target/release/spotseek-backend --cli "<spotify-or-soundcloud-url>" \
+  -o ~/Music/Spotseek --format mp3 --bitrate 320
+```
+
+`--help` lists every option (`--format m4a|flac`, `--limit N`, `--skip-soulseek`,
+`--no-fallback`, …). The Soulseek account comes from `--user NAME --pass-stdin`, or
+from `~/.config/sockseek/sockseek.conf` (see [Soulseek account](#soulseek-account)).
+
+To check a change before you run it: `cd engine && cargo test --release`, and
+`cd ui && cargo test --release`.
 
 ## The app window (Rune UI) and the engine
 
@@ -187,7 +262,7 @@ Development helpers:
 ```bash
 cd engine && cargo test --release && cd ..
 # One run from the command line (text output; add --events for the JSON events):
-engine/target/release/spotseek-backend --cli "<spotify-url>" -o /tmp/out --limit 2
+engine/target/release/spotseek-backend --cli "<spotify-or-soundcloud-url>" -o /tmp/out --limit 2
 cd ui
 cargo test --release
 # Render one screen headless (see --list-scenes: downloading, details, manual, preview, …)

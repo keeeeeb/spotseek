@@ -17,7 +17,7 @@
 
 - Every update ships as a **patch** release (0.2.0 → 0.2.1 → 0.2.2), unless the change is very large.
 - When several patches have collected, the next release can be a **minor** one (0.3.0).
-- **Juan decides minor and major bumps.** Ask him before you make one; do patches without asking.
+- **The repository owner (kevintrankt) decides minor and major bumps.** Ask before you make one; do patches without asking.
 - Release: merge `dev` into `main` (see Branches), then `gh workflow run release.yml --ref main -f version=X.Y.Z -f draft_release=true`.
   When every job passes, publish the draft (`gh release edit vX.Y.Z --draft=false --latest`).
 - Update `packaging/RELEASE_NOTES.md` (it is the release text) and the version in `ui/Cargo.toml`
@@ -30,13 +30,14 @@
 ## Package managers
 
 - **Homebrew:** the cask (`packaging/homebrew/spotseek.rb.in`) goes to the
-  `lopezlav/homebrew-tap` repository. `publish.yml` pushes it when the secret
+  `kevintrankt/homebrew-tap` repository. `publish.yml` pushes it when the secret
   `HOMEBREW_TAP_TOKEN` is set (a fine-grained token with "Contents: write" on that repository).
-- **winget:** the package is `Lopezlav.Spotseek`. The first version is sent by hand
+- **winget:** the package is `Kevintrankt.Spotseek`. The first version is sent by hand
   (`wingetcreate new <installer URL>`, then the pull request to microsoft/winget-pkgs); after it
   is accepted, `publish.yml` sends each new version when the secret `WINGET_TOKEN` is set (a
   classic token with `public_repo`, from an account with a fork of winget-pkgs).
-- Without those secrets the jobs only print a notice.
+- Without those secrets the jobs only print a notice. Neither is set up for this repository yet
+  (no `kevintrankt/homebrew-tap`, no winget package), so the README does not offer them.
 
 ## The app
 

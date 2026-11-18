@@ -26,29 +26,21 @@ need is a **Soulseek account** for the Soulseek route.
 macOS (Apple Silicon or Intel) and Linux:
 
 ```bash
-curl -fsSL https://github.com/lopezlav/spotseek/releases/latest/download/install.sh | sh
-```
-
-macOS with Homebrew:
-
-```bash
-brew install lopezlav/tap/spotseek
+curl -fsSL https://github.com/kevintrankt/spotseek/releases/latest/download/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/lopezlav/spotseek/releases/latest/download/install.ps1 | iex
+irm https://github.com/kevintrankt/spotseek/releases/latest/download/install.ps1 | iex
 ```
-
-or `winget install Lopezlav.Spotseek`.
 
 The scripts download the file for your computer, check it against the release's
 `SHA256SUMS.txt`, and install it: on macOS in `/Applications`, on Linux in
 `~/.local/share/spotseek` (with an app menu entry and a `spotseek` command), on Windows
 for your user.
 
-### From a file ([releases page](https://github.com/lopezlav/spotseek/releases/latest))
+### From a file ([releases page](https://github.com/kevintrankt/spotseek/releases/latest))
 
 | System | File |
 |---|---|
@@ -60,8 +52,8 @@ for your user.
 - **macOS:** open the disk image and drag Spotseek to Applications. macOS 12 (Monterey)
   or later. The app is not notarized by Apple, so the first start from a browser download
   is blocked: use **System Settings → Privacy & Security → Open Anyway**, or run
-  `xattr -dr com.apple.quarantine /Applications/Spotseek.app` once. (The install command and
-  Homebrew do not have this problem.)
+  `xattr -dr com.apple.quarantine /Applications/Spotseek.app` once. (The install command does
+  not have this problem.)
 - **Windows:** run the installer. Windows may show a blue SmartScreen warning because the
   app is not signed: choose **More info**, then **Run anyway**.
 - **Linux, AppImage:** `chmod +x Spotseek-linux-x64.AppImage`, then run it.
@@ -76,7 +68,6 @@ Soulseek password. Built on Ubuntu 22.04.
 
 When a new version is out, a banner on the paste screen says so. **UPDATE** downloads it,
 checks it, puts it in place of the old one and starts Spotseek again; **×** hides that version.
-(Homebrew users can also run `brew upgrade`.)
 
 ## Soulseek account
 

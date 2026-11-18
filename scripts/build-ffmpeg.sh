@@ -285,7 +285,7 @@ cp "$SRC/lame-$LAME_VERSION/COPYING" "$LIC/lame-COPYING.txt"
 cp "$SRC/zlib-$ZLIB_VERSION/LICENSE" "$LIC/zlib-LICENSE.txt"
 cat >"$LIC/ffmpeg-SOURCES.txt" <<EOF
 ffmpeg in Spotseek is built from these sources by scripts/build-ffmpeg.sh
-(https://github.com/lopezlav/spotseek/blob/main/scripts/build-ffmpeg.sh), LGPL only:
+(https://github.com/kevintrankt/spotseek/blob/main/scripts/build-ffmpeg.sh), LGPL only:
   FFmpeg $FFMPEG_VERSION  $FFMPEG_URL  sha256 $FFMPEG_SHA256
   LAME $LAME_VERSION      $LAME_URL  sha256 $LAME_SHA256
   zlib $ZLIB_VERSION      $ZLIB_URL  sha256 $ZLIB_SHA256

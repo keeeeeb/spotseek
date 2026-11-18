@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::json;
 
-pub const REPO: &str = "lopezlav/spotseek";
+pub const REPO: &str = "kevintrankt/spotseek";
 
 #[derive(Debug, Deserialize)]
 struct Release {

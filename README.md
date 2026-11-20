@@ -26,13 +26,13 @@ need is a **Soulseek account** for the Soulseek route.
 macOS (Apple Silicon or Intel) and Linux:
 
 ```bash
-curl -fsSL https://github.com/kevintrankt/spotseek/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/keeeeeb/spotseek/releases/latest/download/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/kevintrankt/spotseek/releases/latest/download/install.ps1 | iex
+irm https://github.com/keeeeeb/spotseek/releases/latest/download/install.ps1 | iex
 ```
 
 The scripts download the file for your computer, check it against the release's
@@ -40,7 +40,7 @@ The scripts download the file for your computer, check it against the release's
 `~/.local/share/spotseek` (with an app menu entry and a `spotseek` command), on Windows
 for your user.
 
-### From a file ([releases page](https://github.com/kevintrankt/spotseek/releases/latest))
+### From a file ([releases page](https://github.com/keeeeeb/spotseek/releases/latest))
 
 | System | File |
 |---|---|
@@ -122,7 +122,7 @@ winget install DenoLand.Deno
 **2. Get the code.**
 
 ```bash
-git clone https://github.com/kevintrankt/spotseek
+git clone https://github.com/keeeeeb/spotseek
 cd spotseek
 # To run a branch that is not merged yet: git checkout <branch-name>
 ```

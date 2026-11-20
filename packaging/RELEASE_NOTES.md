@@ -1,7 +1,7 @@
 ## New in 0.2.5
 
 - **A new home.** Downloads and in-app updates now come from
-  [github.com/kevintrankt/spotseek](https://github.com/kevintrankt/spotseek).
+  [github.com/keeeeeb/spotseek](https://github.com/keeeeeb/spotseek).
 - **SoundCloud links.** Paste a SoundCloud track, set, or a profile's tracks or likes. Each song
   is looked for on Soulseek first, like a Spotify song. When Soulseek does not have it, it comes
   from SoundCloud itself (marked SC), and YouTube Music is the last try. SoundCloud Go+ songs
@@ -42,8 +42,8 @@
   UPDATE downloads it, checks it, and starts the new Spotseek. (This version is the last one to
   install by hand.)
 - **Install with one command.** macOS and Linux:
-  `curl -fsSL https://github.com/kevintrankt/spotseek/releases/latest/download/install.sh | sh`.
-  Windows: `irm https://github.com/kevintrankt/spotseek/releases/latest/download/install.ps1 | iex`.
+  `curl -fsSL https://github.com/keeeeeb/spotseek/releases/latest/download/install.sh | sh`.
+  Windows: `irm https://github.com/keeeeeb/spotseek/releases/latest/download/install.ps1 | iex`.
 - **Intel Macs too** (macOS 12 or later), and a disk image for each Mac. Linux also gets an
   AppImage: one file, nothing to install.
 - **A smaller download.** ffprobe is gone, and ffmpeg is a small build with only what Spotseek

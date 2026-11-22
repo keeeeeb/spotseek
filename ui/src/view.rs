@@ -221,7 +221,7 @@ fn idle(s: &State, size: [f32; 2]) -> El {
         page = page.child(update_banner(s));
     }
     page
-        .child(headline(s, l.t("Paste a Spotify or SoundCloud link", "Pegá un link de Spotify o SoundCloud")).grow(1.0).min_h(160.0))
+        .child(headline(s, l.t("Paste a link", "Pegá un link")).grow(1.0).min_h(160.0))
         .child(row().w_full().center().gap(18.0).pt(10.0)
             .child(col().w(field_w).gap(6.0).child(field).child(underline))
             .child(go))

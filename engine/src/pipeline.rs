@@ -61,12 +61,11 @@ type Pick = Option<u32>;
 struct Ctx {
     o: Options,
     emit: Emitter,
-    session: Session,
+    /// What every link of this engine shares: the Soulseek session, the download slots, the
+    /// peer memory.
+    sh: Arc<Shared>,
     tools: Tools,
     yt: YtDlp,
-    downloads: Semaphore,
-    converts: Semaphore,
-    youtube: Semaphore,
     /// Ends the searches and downloads (STOP); conversions still finish.
     stop: CancellationToken,
     work: PathBuf,
@@ -79,11 +78,6 @@ struct Ctx {
     /// The run has more tracks than the server's search limit allows at once (34): every
     /// search counts, so no second search for a track.
     long_list: bool,
-    /// Peer memory and search cache.
-    store: Mutex<Store>,
-    /// Peers sending us a file now, and how many. Most peers send one file per user at a time
-    /// and queue the rest.
-    busy: Mutex<HashMap<String, usize>>,
     /// Files found for a track without a search (in a peer's folder or shares), not read yet.
     extra: Mutex<HashMap<usize, Vec<slsk::SearchResponse>>>,
     /// Every track of the list, and the ones of this run that still need a file.
@@ -91,10 +85,110 @@ struct Ctx {
     active: Mutex<HashSet<usize>>,
     /// Folders (user + path) already asked for.
     browsed: Mutex<HashSet<String>>,
-    /// One track at a time waits for the search limit, in order; the others wait behind it.
-    search_gate: tokio::sync::Mutex<()>,
     /// The shares of the remembered peers were looked at (or there were none).
     memory_done: std::sync::atomic::AtomicBool,
+}
+
+/// How the first Soulseek sign-in went.
+#[derive(Clone, Debug)]
+enum Login {
+    NoAccount,
+    /// Signed in, after this many seconds.
+    SignedIn(f32),
+    /// The server said no (wrong password, …): no session.
+    Refused { reason: String, detail: String },
+    /// No connection yet; `keep_online` tries again.
+    Offline(String),
+    /// The sign-in task failed: no session.
+    Failed(String),
+}
+
+/// What all the links of one engine share: one Soulseek session (an account can be online in
+/// one place only), the download and conversion slots, the peer memory, and the line for the
+/// search limit. The app window runs one engine for all its tabs (`--serve`).
+pub struct Shared {
+    session: Session,
+    downloads: Semaphore,
+    converts: Semaphore,
+    youtube: Semaphore,
+    /// Peer memory and search cache.
+    store: Mutex<Store>,
+    /// One track at a time waits for the search limit, in order; the others wait behind it.
+    search_gate: tokio::sync::Mutex<()>,
+    /// Peers sending us a file now, and how many. Most peers send one file per user at a time
+    /// and queue the rest.
+    busy: Mutex<HashMap<String, usize>>,
+    /// None while the first sign-in runs.
+    login: tokio::sync::watch::Receiver<Option<Login>>,
+    /// Ends `keep_online`.
+    pub done: CancellationToken,
+}
+
+impl Shared {
+    /// Starts signing in (with an account) at once. `emit` gets the notes about the session
+    /// that are not about one link (it dropped, it is back).
+    pub fn new(account: Option<(String, String)>, server: String, parallel: usize, state_dir: Option<PathBuf>, emit: Emitter) -> Arc<Shared> {
+        // The search limit counts the searches of the runs before (Soulseek counts by account).
+        if let Some(d) = &state_dir {
+            slsk::remember_searches(d.join("searches.json"));
+        }
+        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let sh = Arc::new(Shared {
+            session: Session::default(),
+            downloads: Semaphore::new(parallel.max(1)),
+            converts: Semaphore::new((cpus / 2).clamp(2, 6)),
+            youtube: Semaphore::new(2.min(parallel.max(1))),
+            store: Mutex::new(Store::load(state_dir)),
+            search_gate: tokio::sync::Mutex::new(()),
+            busy: Mutex::default(),
+            login: rx,
+            done: CancellationToken::new(),
+        });
+        let Some((user, pass)) = account else {
+            sh.session.never.store(true, Ordering::SeqCst);
+            let _ = tx.send(Some(Login::NoAccount));
+            return sh;
+        };
+        let started = Instant::now();
+        let s2 = sh.clone();
+        tokio::spawn(async move {
+            let r = tokio::spawn({
+                let (server, user, pass) = (server.clone(), user.clone(), pass.clone());
+                async move { Client::connect(&server, &user, &pass).await }
+            })
+            .await;
+            let (login, retry) = match r {
+                Ok(Ok(c)) => {
+                    s2.session.set(c);
+                    (Login::SignedIn(started.elapsed().as_secs_f32()), true)
+                }
+                Ok(Err(ConnectError::Refused(a))) => {
+                    s2.session.never.store(true, Ordering::SeqCst);
+                    (Login::Refused { reason: a.reason, detail: a.detail }, false)
+                }
+                Ok(Err(e)) => (Login::Offline(e.to_string()), true),
+                Err(e) => {
+                    s2.session.never.store(true, Ordering::SeqCst);
+                    (Login::Failed(e.to_string()), false)
+                }
+            };
+            s2.session.changed.notify_waiters();
+            let _ = tx.send(Some(login));
+            if retry {
+                keep_online(s2, server, user, pass, emit).await;
+            }
+        });
+        sh
+    }
+
+    async fn login(&self) -> Login {
+        let mut rx = self.login.clone();
+        match rx.wait_for(|l| l.is_some()).await {
+            Ok(l) => l.clone().unwrap_or(Login::Failed("no sign-in".into())),
+            Err(_) => Login::Failed("no sign-in".into()),
+        }
+    }
 }
 
 /// The Soulseek session, which can be replaced after a reconnect.
@@ -152,12 +246,23 @@ enum End {
     Stopped,
 }
 
+/// One link on its own engine (the command line).
 pub async fn run(o: Options, emit: Emitter, controls: mpsc::UnboundedReceiver<Control>) -> Result<()> {
+    let sh = Shared::new(o.account.clone(), o.server.clone(), o.parallel, o.state_dir.clone(), emit.clone());
+    let r = run_shared(o, emit, controls, sh.clone()).await;
+    sh.done.cancel();
+    r
+}
+
+/// One link on an engine that may run other links at the same time (`sh`).
+pub async fn run_shared(o: Options, emit: Emitter, controls: mpsc::UnboundedReceiver<Control>, sh: Arc<Shared>) -> Result<()> {
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
     tokio::fs::create_dir_all(&o.out_dir).await?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let work = o.out_dir.join(".work").join(format!("run-{stamp}"));
+    let n = RUNS.fetch_add(1, Ordering::SeqCst);
+    let work = o.out_dir.join(".work").join(format!("run-{stamp}-{n}"));
     tokio::fs::create_dir_all(&work).await?;
-    let r = run_in(o, emit, controls, work.clone()).await;
+    let r = run_in(o, emit, controls, work.clone(), sh).await;
     // The work folder goes, also after an error.
     let _ = tokio::fs::remove_dir_all(&work).await;
     if let Some(p) = work.parent() {
@@ -167,18 +272,8 @@ pub async fn run(o: Options, emit: Emitter, controls: mpsc::UnboundedReceiver<Co
     r
 }
 
-async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver<Control>, work: PathBuf) -> Result<()> {
+async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver<Control>, work: PathBuf, sh: Arc<Shared>) -> Result<()> {
     let started = Instant::now();
-    // The search limit counts the searches of the runs before (Soulseek counts by account).
-    if let Some(d) = &o.state_dir {
-        slsk::remember_searches(d.join("searches.json"));
-    }
-
-    // Sign in to Soulseek while Spotify answers.
-    let login = o.account.clone().map(|(u, p)| {
-        let server = o.server.clone();
-        tokio::spawn(async move { Client::connect(&server, &u, &p).await })
-    });
 
     // The controls: the answer to "which tracks", STOP, and picks.
     let stop = CancellationToken::new();
@@ -268,44 +363,22 @@ async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver
     let note = |code: &str, level: &str, message: &str, line: String| {
         emit.emit(Event { code: code.into(), level: level.into(), message: message.into(), line, ..Event::new("note") });
     };
-    let session = Session::default();
-    let mut retry = false;
-    match login {
-        None => {
-            session.never.store(true, Ordering::SeqCst);
-            note("no_account", "warn", "", "No Soulseek account: using YouTube Music".into());
+    match sh.login().await {
+        Login::NoAccount => note("no_account", "warn", "", "No Soulseek account: using YouTube Music".into()),
+        Login::SignedIn(secs) => note("signed_in", "good", "", format!("Signed in to Soulseek in {secs:.1} s")),
+        Login::Refused { reason, detail } => {
+            let m = format!("Soulseek login failed: {reason} {detail}").trim().to_string();
+            emit.emit(Event { message: m.clone(), ..Event::new("login") });
+            note("login_failed", "bad", &reason, m);
         }
-        Some(h) => match h.await {
-            Ok(Ok(c)) => {
-                note("signed_in", "good", "", format!("Signed in to Soulseek in {:.1} s", started.elapsed().as_secs_f32()));
-                session.set(c);
-                retry = true;
-            }
-            Ok(Err(ConnectError::Refused(a))) => {
-                let m = format!("Soulseek login failed: {} {}", a.reason, a.detail).trim().to_string();
-                emit.emit(Event { message: m.clone(), ..Event::new("login") });
-                session.never.store(true, Ordering::SeqCst);
-                note("login_failed", "bad", &a.reason, m);
-            }
-            Ok(Err(e)) => {
-                note("offline", "bad", &e.to_string(), format!("{e}; trying again"));
-                retry = true;
-            }
-            Err(e) => {
-                session.never.store(true, Ordering::SeqCst);
-                note("offline", "bad", &e.to_string(), format!("Soulseek: {e}"));
-            }
-        },
+        Login::Offline(e) => note("offline", "bad", &e, format!("{e}; trying again")),
+        Login::Failed(e) => note("offline", "bad", &e, format!("Soulseek: {e}")),
     }
-    emit.emit(Event::phase(if session.get().is_some() { "soulseek" } else { "youtube" }));
+    emit.emit(Event::phase(if sh.session.get().is_some() { "soulseek" } else { "youtube" }));
 
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let ctx = Arc::new(Ctx {
         tools: Tools { ffmpeg: o.ffmpeg.clone() },
         yt: YtDlp { bin: o.ytdlp.clone() },
-        downloads: Semaphore::new(o.parallel.max(1)),
-        converts: Semaphore::new((cpus / 2).clamp(2, 6)),
-        youtube: Semaphore::new(2.min(o.parallel.max(1))),
         stop: stop.clone(),
         work: work.clone(),
         files: AtomicUsize::new(0),
@@ -313,23 +386,16 @@ async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver
         stuck: Mutex::default(),
         waiting_search: AtomicUsize::new(0),
         long_list: selected.len() > 30,
-        store: Mutex::new(Store::load(o.state_dir.clone())),
-        busy: Mutex::default(),
         extra: Mutex::default(),
         tracks: tracks.clone(),
         active: Mutex::new(selected.iter().copied().collect()),
         browsed: Mutex::default(),
-        search_gate: tokio::sync::Mutex::new(()),
         memory_done: std::sync::atomic::AtomicBool::new(false),
-        session,
+        sh,
         emit: emit.clone(),
         o,
     });
-    // Keeps the session up: signs in again when the server connection drops.
     let watch = CancellationToken::new();
-    if retry {
-        tokio::spawn(keep_online(ctx.clone(), watch.clone()));
-    }
     tokio::spawn(watch_search_limit(ctx.clone(), watch.clone()));
     // First look in the shares of peers that sent us good files before: no search needed.
     tokio::spawn(browse_memory(ctx.clone()));
@@ -347,7 +413,7 @@ async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver
     }
     while jobs.join_next().await.is_some() {}
     watch.cancel();
-    ctx.store.lock().unwrap().save();
+    ctx.sh.store.lock().unwrap().save();
 
     let files = ctx.files.load(Ordering::SeqCst);
     let missing = ctx.missing.load(Ordering::SeqCst);
@@ -367,50 +433,50 @@ async fn run_in(o: Options, emit: Emitter, mut controls: mpsc::UnboundedReceiver
 
 /// Signs in again when the server connection drops. After "relogged" (the account signed in
 /// somewhere else) it waits a minute first, so two apps do not take the account from each
-/// other in a loop.
-async fn keep_online(ctx: Arc<Ctx>, done: CancellationToken) {
-    let Some((user, pass)) = ctx.o.account.clone() else { return };
+/// other in a loop. Runs until `sh.done`.
+async fn keep_online(sh: Arc<Shared>, server: String, user: String, pass: String, emit: Emitter) {
+    let note = |code: &str, level: &str, message: &str, secs: u32, line: String| {
+        emit.emit(Event { code: code.into(), level: level.into(), message: message.into(), secs, line, ..Event::new("note") });
+    };
     let mut fails = 0u32;
     loop {
         // Wait for the session to drop.
         loop {
-            if ctx.session.get().is_none_or(|c| !c.online()) {
+            if sh.session.get().is_none_or(|c| !c.online()) {
                 break;
             }
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-                _ = done.cancelled() => return,
-                _ = ctx.stop.cancelled() => return,
+                _ = sh.done.cancelled() => return,
             }
         }
-        let reason = ctx.session.get().map(|c| c.offline_reason()).unwrap_or_default();
+        let reason = sh.session.get().map(|c| c.offline_reason()).unwrap_or_default();
         let relogged = reason == "relogged";
         let wait = if relogged { 60 } else { [2u32, 5, 10, 30, 60][fails.min(4) as usize] };
         if fails == 0 && !reason.is_empty() {
             let line = if relogged { "Soulseek: the account signed in somewhere else".to_string() } else { format!("Soulseek disconnected: {reason}") };
-            ctx.note("offline", "bad", None, "", &reason, 0, 0, line);
+            note("offline", "bad", &reason, 0, line);
         }
-        ctx.note("reconnecting", "warn", None, "", "", 0, wait, format!("Signing in to Soulseek again in {wait} s"));
+        note("reconnecting", "warn", "", wait, format!("Signing in to Soulseek again in {wait} s"));
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(wait as u64)) => {}
-            _ = done.cancelled() => return,
-            _ = ctx.stop.cancelled() => return,
+            _ = sh.done.cancelled() => return,
         }
-        match Client::connect(&ctx.o.server, &user, &pass).await {
+        match Client::connect(&server, &user, &pass).await {
             Ok(c) => {
                 fails = 0;
-                ctx.session.set(c);
-                ctx.note("reconnected", "good", None, "", "", 0, 0, "Signed in to Soulseek again".into());
+                sh.session.set(c);
+                note("reconnected", "good", "", 0, "Signed in to Soulseek again".into());
             }
             Err(ConnectError::Refused(a)) => {
-                ctx.session.never.store(true, Ordering::SeqCst);
-                ctx.session.changed.notify_waiters();
-                ctx.note("login_failed", "bad", None, "", &a.reason, 0, 0, format!("Soulseek login failed: {} {}", a.reason, a.detail));
+                sh.session.never.store(true, Ordering::SeqCst);
+                sh.session.changed.notify_waiters();
+                note("login_failed", "bad", &a.reason, 0, format!("Soulseek login failed: {} {}", a.reason, a.detail));
                 return;
             }
             Err(e) => {
                 fails += 1;
-                ctx.note("offline", "bad", None, "", &e.to_string(), 0, 0, format!("{e}"));
+                note("offline", "bad", &e.to_string(), 0, format!("{e}"));
             }
         }
     }
@@ -465,7 +531,7 @@ async fn start_search(client: &Client, query: &str, window: Duration, stop: Canc
 
 /// One track from start to end.
 async fn track_job(ctx: Arc<Ctx>, i: usize, t: Track, mut picks: mpsc::UnboundedReceiver<Pick>) {
-    let end = match ctx.session.ready(&ctx.stop, Duration::from_secs(90)).await {
+    let end = match ctx.sh.session.ready(&ctx.stop, Duration::from_secs(90)).await {
         Some(c) => soulseek(&ctx, c, i, &t, &mut picks).await,
         None => None,
     };
@@ -503,7 +569,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
     let manual = ctx.o.manual;
     ctx.emit.emit(Event::track(i, "searching"));
     let mut ranker = Ranker::new(t.clone(), ctx.o.format, ctx.o.bitrate);
-    ranker.known = ctx.store.lock().unwrap().peers.iter().filter(|(_, p)| p.hits > 0).map(|(u, _)| u.clone()).collect();
+    ranker.known = ctx.sh.store.lock().unwrap().peers.iter().filter(|(_, p)| p.hits > 0).map(|(u, _)| u.clone()).collect();
     let (tx, mut answers) = mpsc::unbounded_channel();
     let queries = rank::queries(t);
     // Answers keep coming in while the track waits or downloads: more choices if one fails.
@@ -526,7 +592,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
         // turns up in a peer's folder meanwhile.
         ctx.waiting_search.fetch_add(1, Ordering::SeqCst);
         let gate = tokio::select! {
-            g = ctx.search_gate.lock() => g,
+            g = ctx.sh.search_gate.lock() => g,
             _ = ctx.stop.cancelled() => { ctx.waiting_search.fetch_sub(1, Ordering::SeqCst); return Some(End::Stopped) }
         };
         loop {
@@ -545,7 +611,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
             }
         }
         if how == "search" {
-            let cached = ctx.store.lock().unwrap().cached(&queries[0]);
+            let cached = ctx.sh.store.lock().unwrap().cached(&queries[0]);
             if let Some(answers) = cached {
                 how = "cache";
                 for r in answers {
@@ -558,7 +624,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
             sent = start_search(c, &queries[0], window, ctx.stop.clone(), tx.clone()).await;
             if sent.is_err() {
                 // The session dropped: wait for the reconnect, then once more.
-                if let Some(n) = ctx.session.ready(&ctx.stop, Duration::from_secs(120)).await {
+                if let Some(n) = ctx.sh.session.ready(&ctx.stop, Duration::from_secs(120)).await {
                     *c = n;
                     sent = start_search(c, &queries[0], window, ctx.stop.clone(), tx.clone()).await;
                 }
@@ -620,7 +686,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
         heard.push(r);
     }
     if searched && !heard.is_empty() {
-        ctx.store.lock().unwrap().cache(&queries[0], &heard);
+        ctx.sh.store.lock().unwrap().cache(&queries[0], &heard);
     }
     drop(heard);
     if how != "search" {
@@ -678,7 +744,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
                 Some(Some(id)) => Some(id),
                 None => {
                     let stuck = ctx.stuck.lock().unwrap();
-                    let busy = ctx.busy.lock().unwrap();
+                    let busy = ctx.sh.busy.lock().unwrap();
                     let open: Vec<&rank::Cand> = ranker.cands.iter().filter(|c| !c.failed && !stuck.contains(&c.user)).collect();
                     // A peer that already sends us a file queues the next one: take a free
                     // peer instead when its file is nearly as good.
@@ -716,7 +782,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
                 // It sends after all (it was only busy with another of our files).
                 ctx.stuck.lock().unwrap().remove(&cand.user);
                 ctx.note("downloaded", "good", Some(i), &cand.user, "", 0, secs, format!("{} - {}: downloaded from {} in {secs} s", t.artist, t.title, cand.user));
-                ctx.store.lock().unwrap().hit(&cand.user, cand.file.size, secs as f64, &rank::norm(rank::main_artist(&t.artist)));
+                ctx.sh.store.lock().unwrap().hit(&cand.user, cand.file.size, secs as f64, &rank::norm(rank::main_artist(&t.artist)));
                 ctx.active.lock().unwrap().remove(&i);
                 ctx.emit.emit(Event { peer: cand.user.clone(), source: "soulseek".into(), total: cand.file.size, bitrate: rank::kbps(&cand.file), cand: Some(id), ..Event::track(i, "done") });
                 return Some(finish(ctx, i, t, &path).await);
@@ -730,7 +796,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
                     // Not the peer's fault: the session dropped. Try the same file once it is back.
                     ctx.emit.emit(Event::log(line));
                     ctx.emit.emit(Event::track(i, "searching"));
-                    match ctx.session.ready(&ctx.stop, Duration::from_secs(150)).await {
+                    match ctx.sh.session.ready(&ctx.stop, Duration::from_secs(150)).await {
                         Some(n) => {
                             *c = n;
                             tries -= 1;
@@ -742,7 +808,7 @@ async fn soulseek(ctx: &Arc<Ctx>, client: Client, i: usize, t: &Track, picks: &m
                     }
                 }
                 ctx.note("peer_failed", "warn", Some(i), &cand.user, code, 0, 0, line);
-                ctx.store.lock().unwrap().fail(&cand.user);
+                ctx.sh.store.lock().unwrap().fail(&cand.user);
                 ranker.mark_failed(id);
                 if code == "queued" || code == "no_start" {
                     ctx.stuck.lock().unwrap().insert(cand.user.clone());
@@ -775,7 +841,7 @@ async fn fetch(ctx: &Arc<Ctx>, c: &Client, i: usize, cand: &rank::Cand, picks: &
     let mut busy_guard: Option<Busy> = None;
     // A download slot; a pick while waiting for one counts.
     let _permit = tokio::select! {
-        p = ctx.downloads.acquire() => match p { Ok(p) => p, Err(_) => return Fetch::Stopped },
+        p = ctx.sh.downloads.acquire() => match p { Ok(p) => p, Err(_) => return Fetch::Stopped },
         p = picks.recv() => return Fetch::Switch(p.unwrap_or(None)),
         _ = ctx.stop.cancelled() => return Fetch::Stopped,
     };
@@ -882,7 +948,7 @@ async fn fetch(ctx: &Arc<Ctx>, c: &Client, i: usize, cand: &rank::Cand, picks: &
                     None => {
                         // It must start: soon from a free slot, a little later from a queue.
                         // Queued behind another of our own files from this peer: we are next.
-                        let behind_ours = queued && ctx.busy.lock().unwrap().get(&cand.user).is_some_and(|n| *n > 0);
+                        let behind_ours = queued && ctx.sh.busy.lock().unwrap().get(&cand.user).is_some_and(|n| *n > 0);
                         let limit = if manual { 120 } else if behind_ours { 240 } else if queued { 20 } else { 15 };
                         if waited > limit && (others > 0 || manual || waited > 60) {
                             return if queued { fail(&cancel, "queued", "still queued") } else { fail(&cancel, "no_start", "did not start") };
@@ -918,7 +984,7 @@ async fn fetch(ctx: &Arc<Ctx>, c: &Client, i: usize, cand: &rank::Cand, picks: &
 
 /// Converts the downloaded file into the output folder.
 async fn finish(ctx: &Arc<Ctx>, i: usize, t: &Track, src: &Path) -> End {
-    let _permit = ctx.converts.acquire().await;
+    let _permit = ctx.sh.converts.acquire().await;
     let base = {
         let b = safe_name(&format!("{} - {}", t.artist, t.title));
         if b.is_empty() { "track".to_string() } else { b }
@@ -941,11 +1007,11 @@ async fn finish(ctx: &Arc<Ctx>, i: usize, t: &Track, src: &Path) -> End {
 async fn youtube(ctx: &Arc<Ctx>, i: usize, t: &Track) -> End {
     // At most 2 from YouTube (more from one address gets blocked), out of the shared budget.
     let _permit = tokio::select! {
-        p = ctx.youtube.acquire() => p,
+        p = ctx.sh.youtube.acquire() => p,
         _ = ctx.stop.cancelled() => return End::Stopped,
     };
     let _slot = tokio::select! {
-        p = ctx.downloads.acquire() => p,
+        p = ctx.sh.downloads.acquire() => p,
         _ = ctx.stop.cancelled() => return End::Stopped,
     };
     ctx.emit.emit(Event { source: "youtube".into(), ..Event::track(i, "yt_search") });
@@ -990,7 +1056,7 @@ async fn youtube(ctx: &Arc<Ctx>, i: usize, t: &Track) -> End {
 /// A SoundCloud track that Soulseek does not have: the audio of its own page.
 async fn soundcloud(ctx: &Arc<Ctx>, i: usize, t: &Track) -> End {
     let _slot = tokio::select! {
-        p = ctx.downloads.acquire() => p,
+        p = ctx.sh.downloads.acquire() => p,
         _ = ctx.stop.cancelled() => return End::Stopped,
     };
     let ev = |state: &str, total: u64| Event { source: "soundcloud".into(), peer: "SoundCloud".into(), url: t.url.clone(), total, ..Event::track(i, state) };
@@ -1085,7 +1151,7 @@ fn browse_folder_of(ctx: &Arc<Ctx>, c: Client, i: usize, user: &str, file: &str)
         return;
     }
     let (ctx, user) = (ctx.clone(), user.to_string());
-    let speed = ctx.store.lock().unwrap().peers.get(&user).map(|p| p.speed()).unwrap_or(0);
+    let speed = ctx.sh.store.lock().unwrap().peers.get(&user).map(|p| p.speed()).unwrap_or(0);
     tokio::spawn(async move {
         let Ok(files) = c.browse_folder(&user, &folder, Duration::from_secs(20)).await else { return };
         let n = match_files(&ctx, &user, speed, &files, i);
@@ -1100,9 +1166,9 @@ fn browse_folder_of(ctx: &Arc<Ctx>, c: Client, i: usize, user: &str, file: &str)
 /// run's artists first). Songs found there need no search.
 async fn browse_memory(ctx: Arc<Ctx>) {
     let done = |ctx: &Ctx| ctx.memory_done.store(true, Ordering::SeqCst);
-    let Some(c) = ctx.session.ready(&ctx.stop, Duration::from_secs(30)).await else { return done(&ctx) };
+    let Some(c) = ctx.sh.session.ready(&ctx.stop, Duration::from_secs(30)).await else { return done(&ctx) };
     let artists: Vec<String> = ctx.active.lock().unwrap().iter().map(|&j| rank::norm(rank::main_artist(&ctx.tracks[j].artist))).collect();
-    let peers = ctx.store.lock().unwrap().best_peers(6, &artists);
+    let peers = ctx.sh.store.lock().unwrap().best_peers(6, &artists);
     if peers.is_empty() {
         return done(&ctx);
     }
@@ -1132,12 +1198,12 @@ async fn browse_memory(ctx: Arc<Ctx>) {
 /// search limit, then collects answers for a few seconds.
 async fn late_search(ctx: &Arc<Ctx>, c: &mut Client, query: &str, window: Duration, ranker: &mut Ranker) {
     ctx.waiting_search.fetch_add(1, Ordering::SeqCst);
-    let gate = ctx.search_gate.lock().await;
+    let gate = ctx.sh.search_gate.lock().await;
     while !slsk::search_wait().is_zero() && !ctx.stop.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     if !c.online() {
-        if let Some(n) = ctx.session.ready(&ctx.stop, Duration::from_secs(120)).await {
+        if let Some(n) = ctx.sh.session.ready(&ctx.stop, Duration::from_secs(120)).await {
             *c = n;
         }
     }
@@ -1169,14 +1235,14 @@ struct Busy {
 
 impl Busy {
     fn new(ctx: &Arc<Ctx>, user: &str) -> Busy {
-        *ctx.busy.lock().unwrap().entry(user.to_string()).or_default() += 1;
+        *ctx.sh.busy.lock().unwrap().entry(user.to_string()).or_default() += 1;
         Busy { ctx: ctx.clone(), user: user.to_string() }
     }
 }
 
 impl Drop for Busy {
     fn drop(&mut self) {
-        let mut b = self.ctx.busy.lock().unwrap();
+        let mut b = self.ctx.sh.busy.lock().unwrap();
         if let Some(n) = b.get_mut(&self.user) {
             *n -= 1;
             if *n == 0 {

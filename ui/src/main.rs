@@ -71,6 +71,7 @@ fn on_key(s: &mut State, ev: &KeyEvent, _: &mut Tx) -> bool {
         }
         Key::Enter if s.phase == Phase::Idle && !s.settings_open && !s.login_open => s.start(),
         Key::Command(',') => s.settings_open = true,
+        Key::Command('t') if !s.settings_open && !s.login_open => s.new_tab(),
         _ => return false,
     }
     true
@@ -105,6 +106,22 @@ fn demo(s: &mut State) {
 
 fn scene_pasted(s: &mut State) {
     s.link.replace_text("https://open.spotify.com/playlist/37i9dQZF1DX4sWnBi0yS4q");
+}
+
+/// Three tabs: one downloading, one done, and a new one with a link pasted (open).
+fn scene_tabs(s: &mut State) {
+    scene_downloading(s);
+    s.new_tab();
+    scene_done_soundcloud(s);
+    s.name = "Soulhack".into();
+    s.new_tab();
+    s.link.replace_text("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy");
+}
+
+/// The same tabs, with the downloading one open.
+fn scene_tabs_running(s: &mut State) {
+    scene_tabs(s);
+    s.switch_tab(0);
 }
 
 /// A SoundCloud set pasted.
@@ -465,6 +482,8 @@ fn main() {
             ("idle-signed-out", scene_idle_signed_out),
             ("waiting", scene_waiting),
             ("pasted-soundcloud", scene_pasted_soundcloud),
+            ("tabs", scene_tabs),
+            ("tabs-running", scene_tabs_running),
             ("done-soundcloud", scene_done_soundcloud),
             ("settings", scene_settings),
             ("settings-flac", scene_settings_flac),

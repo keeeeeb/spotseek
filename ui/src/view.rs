@@ -74,7 +74,9 @@ fn link_text(key: &str, label: &str) -> El {
 // ------------------------------------------------------------------ root
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let size = cx.layout_size("root").unwrap_or([1100.0, 760.0]);
+    let full = cx.layout_size("root").unwrap_or([1100.0, 760.0]);
+    // The screens get the room under the tab strip.
+    let size = [full[0], full[1] - TABS_H];
     let body = match s.phase {
         Phase::Idle if s.show_history => history_screen(s, size),
         Phase::Idle => idle(s, size),
@@ -85,14 +87,59 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let inset = cx.titlebar_inset().min(26.0);
     let mut root = col().key("root").w_full().h_full().pt(inset).fill(paper())
         .on_paste(|s: &mut State, pasted: &str, _: &mut Tx| s.paste(pasted))
-        .child(grid(size))
-        .child(body);
+        .child(grid(full))
+        .child(tab_strip(s, full[0]))
+        .child(col().key("tab-body").w_full().grow(1.0).min_h(0.0).child(body));
     if s.settings_open {
         root = root.child(settings_panel(s));
     } else if s.login_open {
         root = root.child(login_window(s));
     }
     root
+}
+
+/// The height of the tab strip.
+const TABS_H: f32 = 36.0;
+
+/// One tab per link: its name and how far it is; + opens a new one (⌘T).
+fn tab_strip(s: &State, width: f32) -> El {
+    let l = s.lang;
+    let infos = s.tab_infos();
+    let n = infos.len();
+    // Every tab gets the same width, up to 240.
+    let tab_w = ((width - 48.0 - 44.0) / n as f32).clamp(90.0, 240.0);
+    let mut strip = row().key("tabs").w_full().h(TABS_H).px(24.0).gap(6.0).center_y();
+    for (k, t) in infos.into_iter().enumerate() {
+        let on = k == s.tab;
+        let (bg, fg) = if on { (ink(), paper()) } else { (Color::TRANSPARENT, ink()) };
+        let mark = match t.phase {
+            Phase::Running => format!("{:.0}%", t.progress * 100.0),
+            Phase::Done => "✓".into(),
+            Phase::Failed => "!".into(),
+            Phase::Idle => String::new(),
+        };
+        let mut tab = row().key(format!("tab-{k}")).w(tab_w).h(28.0).pl(10.0).pr(4.0).gap(6.0).center_y()
+            .border(2.0, ink()).fill(bg).cursor(Cursor::Pointer).role("tab").label(t.label.clone())
+            .on_press(move |s: &mut State| s.switch_tab(k));
+        if t.phase == Phase::Running {
+            // How far it is, as a thin line along the bottom.
+            tab = tab.child(el().absolute(0.0, 22.0).size((tab_w - 4.0) * t.progress.clamp(0.0, 1.0), 2.0).fill(if on { paper() } else { red() }).inert());
+        }
+        tab = tab
+            .child(text(t.label).font(mono(12.0, 600.0)).color(fg).truncate().shrink().grow(1.0).min_w(0.0))
+            .child(text(mark).font(mono(11.0, 600.0)).color(fg));
+        if n > 1 || t.phase != Phase::Idle {
+            tab = tab.child(row().key(format!("tab-close-{k}")).size(20.0, 20.0).center().cursor(Cursor::Pointer).role("button")
+                .label(l.t("Close tab", "Cerrar pestaña")).hover(red())
+                .on_press(move |s: &mut State| s.close_tab(k))
+                .child(text("×").font(mono(14.0, 600.0)).color(fg)));
+        }
+        strip = strip.child(tab);
+    }
+    strip.child(row().key("tab-new").size(28.0, 28.0).center().border(2.0, ink()).cursor(Cursor::Pointer).role("button")
+        .label(l.t("New tab (⌘T)", "Pestaña nueva (⌘T)")).hover(red())
+        .on_press(|s: &mut State| s.new_tab())
+        .child(text("+").font(mono(16.0, 600.0)).color(ink())))
 }
 
 /// Faint graph paper behind everything.

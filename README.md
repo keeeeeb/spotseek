@@ -173,13 +173,18 @@ To check a change before you run it: `cd engine && cargo test --release`, and
 
 The window is `ui/`, written in Rust with [Rune](https://github.com/anomalyco/rune).
 It does no downloading itself: it runs the engine, `engine/` (Rust, the program
-`spotseek-backend`), as a child process:
-`spotseek-backend --cli <url> -o <dir> --events --ask [--manual]`. The engine writes one
-JSON event per line (see `engine/src/events.rs`) and stops when its stdin closes. Stdin
-lines it reads: `{"only":[0,2,5]}` after the track list (with `--ask`), `{"stop":true}`
-(stop downloading, keep and convert what is done), and `{"pick":{"i":3,"id":7}}` or
-`{"pick":{"i":3,"yt":true}}` (download that file for track 3, or take it from YouTube
-Music). The window looks for `spotseek-backend` next to its own program; set
+`spotseek-backend`), as one child process for every tab:
+`spotseek-backend --serve --events [--user NAME --pass-stdin]`. A Soulseek account can be
+online in one place only, so all tabs share that one engine, its Soulseek session, its
+download slots (12) and the search limit; each tab's link is a job that runs at the same time
+as the others. Stdin lines name the job: `{"job":3,"add":{"url":…,"out":…,"format":"mp3",
+"bitrate":320,"fallback":true,"ask":true,"manual":false,"cover_out":…}}` starts it,
+`{"job":3,"only":[0,2,5]}` answers the track list, `{"job":3,"stop":true}` stops downloading
+(keep and convert what is done), `{"job":3,"cancel":true}` ends it at once, and
+`{"job":3,"pick":{"i":3,"id":7}}` or `{"job":3,"pick":{"i":3,"yt":true}}` downloads that file
+for track 3, or takes it from YouTube Music. The engine writes one JSON event per line (see
+`engine/src/events.rs`), each with its `job` (0: the Soulseek session as a whole), and stops
+when its stdin closes. `--cli <url> -o <dir>` runs one link on its own. The window looks for `spotseek-backend` next to its own program; set
 `SPOTSEEK_BACKEND` to use another path.
 
 How the engine works (`engine/src`):

@@ -1,3 +1,11 @@
+## New in 0.2.6
+
+- **Tabs: download several links at once.** Press **+** at the top of the window (or ⌘T / Ctrl+T)
+  and paste another link while the first one downloads. Each tab shows its own list and
+  progress; × closes a tab (a download in it stops, what it finished is kept). All tabs share
+  one Soulseek sign-in, since an account can be online in one place only, and the 12 download
+  slots and Soulseek's search limit are shared too.
+
 ## New in 0.2.5
 
 - **A new home.** Downloads and in-app updates now come from

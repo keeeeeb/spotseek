@@ -24,8 +24,9 @@ pub const ASK_SECS: f64 = 10.0;
 /// The same when every track of the link is already there.
 pub const ASK_ALL_SECS: f64 = 20.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
+    #[default]
     Idle,
     Running,
     Done,
@@ -225,7 +226,128 @@ impl Detail {
     }
 }
 
+/// The fields that belong to one tab. The open tab's are in [`State`] itself (so the screens
+/// read them as before); the others wait in `State::tabs` and are swapped in to show them or to
+/// take an event of their run.
+macro_rules! tab_fields {
+    ($m:ident) => {
+        $m! {
+            link: TextEdit,
+            phase: Phase,
+            stage: String,
+            name: String,
+            kind: String,
+            tracks: Vec<Track>,
+            convert: (usize, usize),
+            files: usize,
+            out_dir: String,
+            error: String,
+            notice: String,
+            last_log: String,
+            speed: f32,
+            speed_bytes: u64,
+            speed_t: f64,
+            login_problem: bool,
+            run: Option<Run>,
+            run_id: u64,
+            next_only: Option<Vec<usize>>,
+            running_link: String,
+            demo_t0: Option<f64>,
+            library: Arc<Mutex<Option<Library>>>,
+            session_id: String,
+            session_started: f64,
+            cover: String,
+            open: Option<String>,
+            countdown: Option<(f64, f64)>,
+            show_history: bool,
+            stopping: bool,
+            last_progress: f64,
+            stopped_early: bool,
+            manual: bool,
+            notes: Vec<Note>,
+            soulseek_down: bool,
+            hover_started: Option<usize>,
+            scrub: Option<(String, f32)>
+        }
+    };
+}
+
+macro_rules! define_tab {
+    ($($f:ident: $t:ty),*) => {
+        /// A tab that is not the open one (see `tab_fields`).
+        pub struct Tab {
+            $(pub $f: $t,)*
+        }
+
+        impl Tab {
+            fn swap_with(&mut self, s: &mut State) {
+                $(std::mem::swap(&mut self.$f, &mut s.$f);)*
+            }
+        }
+    };
+}
+tab_fields!(define_tab);
+
+impl Default for Tab {
+    fn default() -> Tab {
+        Tab {
+            link: TextEdit::new(""),
+            phase: Phase::Idle,
+            stage: String::new(),
+            name: String::new(),
+            kind: String::new(),
+            tracks: Vec::new(),
+            convert: (0, 0),
+            files: 0,
+            out_dir: String::new(),
+            error: String::new(),
+            notice: String::new(),
+            last_log: String::new(),
+            speed: 0.0,
+            speed_bytes: 0,
+            speed_t: 0.0,
+            login_problem: false,
+            run: None,
+            run_id: 0,
+            next_only: None,
+            running_link: String::new(),
+            demo_t0: None,
+            library: Arc::default(),
+            session_id: String::new(),
+            session_started: 0.0,
+            cover: String::new(),
+            open: None,
+            countdown: None,
+            show_history: false,
+            stopping: false,
+            last_progress: 0.0,
+            stopped_early: false,
+            manual: false,
+            notes: Vec::new(),
+            soulseek_down: false,
+            hover_started: None,
+            scrub: None,
+        }
+    }
+}
+
+/// What the tab strip shows for one tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabInfo {
+    pub label: String,
+    pub phase: Phase,
+    /// 0 to 1 while it runs.
+    pub progress: f32,
+}
+
 pub struct State {
+    /// Every tab; the open one (`tab`) is only a placeholder: its fields are in this struct.
+    pub tabs: Vec<Tab>,
+    pub tab: usize,
+    /// The engine every tab's run uses (one Soulseek session), once one has run.
+    pub engine: Option<Arc<backend::Engine>>,
+    /// The last id given to a run or an engine.
+    ids: u64,
     pub link: TextEdit,
     pub phase: Phase,
     /// The backend's phase: spotify, soulseek, youtube, convert, done.
@@ -259,6 +381,7 @@ pub struct State {
     pub login_problem: bool,
     pub lang: Lang,
     pub run: Option<Run>,
+    /// The id of this tab's current run (its engine `job`); events of other ids are not its.
     pub run_id: u64,
     /// The tracks the next run downloads (a follow-up run), or None for the first run.
     next_only: Option<Vec<usize>>,
@@ -329,6 +452,10 @@ impl State {
             Media::silent()
         };
         State {
+            tabs: vec![Tab::default()],
+            tab: 0,
+            engine: None,
+            ids: 0,
             link: TextEdit::new(""),
             phase: Phase::Idle,
             stage: String::new(),
@@ -431,7 +558,7 @@ impl State {
         self.session_started = history::now();
         self.session_id = session_id();
         if self.demo {
-            self.run_id += 1;
+            self.run_id = self.fresh_id();
             self.demo_t0 = Some(self.now);
             return;
         }
@@ -448,19 +575,40 @@ impl State {
         self.launch();
     }
 
-    /// Starts a backend run for the current link.
+    /// A number no run or engine had before.
+    fn fresh_id(&mut self) -> u64 {
+        self.ids += 1;
+        self.ids
+    }
+
+    /// The engine for the current account: the running one, or a new one. A run that is
+    /// still going on an engine of another account keeps it until it ends.
+    fn engine_for(&mut self, req: &backend::EngineRequest) -> Result<Arc<backend::Engine>, String> {
+        if let Some(e) = self.engine.as_ref().filter(|e| e.serves(req)) {
+            return Ok(e.clone());
+        }
+        let Some(handle) = self.handle.clone() else { return Err("no window".into()) };
+        let id = self.fresh_id();
+        let (events, exits) = (handle.clone(), handle);
+        let e = backend::Engine::start(
+            id,
+            req,
+            move |e| events.update(move |s, _| s.engine_event(id, e)),
+            move |msg| exits.update(move |s, _| s.engine_exited(id, msg)),
+        )?;
+        self.engine = Some(e.clone());
+        Ok(e)
+    }
+
+    /// Starts a backend run for the current link (on the engine every tab shares).
     fn launch(&mut self) {
-        self.run_id += 1;
+        self.run_id = self.fresh_id();
         self.countdown = None;
-        let Some(handle) = self.handle.clone() else { return };
-        let id = self.run_id;
+        if self.handle.is_none() {
+            return;
+        }
         let stamp = session_id();
-        let req = backend::Request {
-            url: self.running_link.clone(),
-            dir: self.settings.dir.clone(),
-            format: self.settings.format.clone(),
-            bitrate: self.settings.bitrate.clone(),
-            fallback: self.settings.fallback,
+        let ereq = backend::EngineRequest {
             user: match &self.account {
                 Account::App(u, _) => u.clone(),
                 _ => String::new(),
@@ -469,29 +617,177 @@ impl State {
                 Account::App(_, p) => p.clone(),
                 _ => String::new(),
             },
-            ask: true,
             skip_soulseek: self.account == Account::None,
-            manual: self.settings.manual,
-            cover_out: if self.persist && self.cover.is_empty() { config_dir().join("covers").join(format!("{}.jpg", self.session_id)).to_string_lossy().into_owned() } else { String::new() },
             log: self.persist.then(|| config_dir().join("logs").join(format!("{stamp}.log"))),
         };
-        let events = handle.clone();
-        let exits = handle.clone();
-        let started = Run::start(
-            &req,
-            move |e| events.update(move |s, _| if s.run_id == id { s.apply(e) }),
-            move |msg| exits.update(move |s, _| if s.run_id == id { s.exited(msg) }),
-        );
-        match started {
-            Ok(run) => {
+        let req = backend::Request {
+            url: self.running_link.clone(),
+            dir: self.settings.dir.clone(),
+            format: self.settings.format.clone(),
+            bitrate: self.settings.bitrate.clone(),
+            fallback: self.settings.fallback,
+            ask: true,
+            manual: self.settings.manual,
+            cover_out: if self.persist && self.cover.is_empty() { config_dir().join("covers").join(format!("{}.jpg", self.session_id)).to_string_lossy().into_owned() } else { String::new() },
+        };
+        match self.engine_for(&ereq) {
+            Ok(engine) => {
                 self.stage = if self.running_link.contains("soundcloud.com") { "soundcloud" } else { "spotify" }.into();
-                self.run = Some(run);
+                self.run = Some(Run::start(&engine, self.run_id, &req));
             }
             Err(e) => {
                 self.phase = Phase::Failed;
                 self.error = e;
             }
         }
+    }
+
+    // ---------------------------------------------------------------- tabs
+
+    /// Runs `f` with tab `k`'s fields in place (the open tab's are already there).
+    pub fn with_tab<R>(&mut self, k: usize, f: impl FnOnce(&mut State) -> R) -> R {
+        if k == self.tab || k >= self.tabs.len() {
+            return f(self);
+        }
+        let mut t = std::mem::take(&mut self.tabs[k]);
+        t.swap_with(self);
+        let out = f(self);
+        t.swap_with(self);
+        self.tabs[k] = t;
+        out
+    }
+
+    /// The tab whose current run is `job`.
+    fn tab_of_run(&self, job: u64) -> Option<usize> {
+        if job == 0 {
+            return None;
+        }
+        if self.run_id == job {
+            return Some(self.tab);
+        }
+        self.tabs.iter().enumerate().find(|(k, t)| *k != self.tab && t.run_id == job).map(|(k, _)| k)
+    }
+
+    /// The tabs with a run on engine `id`.
+    fn tabs_on_engine(&self, id: u64) -> Vec<usize> {
+        (0..self.tabs.len())
+            .filter(|&k| {
+                let run = if k == self.tab { &self.run } else { &self.tabs[k].run };
+                run.as_ref().is_some_and(|r| r.engine.id == id)
+            })
+            .collect()
+    }
+
+    /// An event of the engine: to the tab of its run, or (job 0: the Soulseek session) to
+    /// every tab that runs on it.
+    fn engine_event(&mut self, engine: u64, e: Event) {
+        if e.job == 0 {
+            for k in self.tabs_on_engine(engine) {
+                let e = e.clone();
+                self.with_tab(k, |s| s.apply(e));
+            }
+        } else if let Some(k) = self.tab_of_run(e.job) {
+            self.with_tab(k, |s| s.apply(e));
+        }
+    }
+
+    /// The engine process ended: every run on it ends too.
+    fn engine_exited(&mut self, engine: u64, msg: Option<String>) {
+        if self.engine.as_ref().is_some_and(|e| e.id == engine) {
+            self.engine = None;
+        }
+        for k in self.tabs_on_engine(engine) {
+            let msg = msg.clone().or_else(|| Some("the backend stopped".into()));
+            self.with_tab(k, |s| s.exited(msg));
+        }
+    }
+
+    /// Opens tab `k`.
+    pub fn switch_tab(&mut self, k: usize) {
+        if k == self.tab || k >= self.tabs.len() {
+            return;
+        }
+        self.stop_hover();
+        // The open tab's fields go to its slot; tab k's come here.
+        let cur = self.tab;
+        let mut slot = std::mem::take(&mut self.tabs[cur]);
+        slot.swap_with(self);
+        self.tabs[cur] = slot;
+        self.tab = k;
+        let mut t = std::mem::take(&mut self.tabs[k]);
+        t.swap_with(self);
+        self.tabs[k] = t;
+        // Its speed counts from now (bytes kept coming while it was hidden).
+        self.speed_t = self.now;
+        self.speed_bytes = 0;
+    }
+
+    /// A new tab with an empty link, opened.
+    pub fn new_tab(&mut self) {
+        self.tabs.push(Tab::default());
+        self.switch_tab(self.tabs.len() - 1);
+        self.link.focused = true;
+    }
+
+    /// Closes tab `k`; a run in it stops (what it finished stays in the history).
+    pub fn close_tab(&mut self, k: usize) {
+        if k >= self.tabs.len() {
+            return;
+        }
+        self.with_tab(k, |s| {
+            s.demo_t0 = None;
+            if let Some(mut r) = s.run.take() {
+                r.stop();
+            }
+            if s.phase == Phase::Running {
+                s.save_session();
+            }
+        });
+        if self.tabs.len() == 1 {
+            // The last tab: it becomes an empty one.
+            self.run_id = self.fresh_id();
+            self.reset_run();
+            self.phase = Phase::Idle;
+            self.show_history = false;
+            self.link.replace_text("");
+            self.link.focused = true;
+            return;
+        }
+        if k == self.tab {
+            // Open the tab next to it first.
+            let next = if k + 1 < self.tabs.len() { k + 1 } else { k - 1 };
+            self.switch_tab(next);
+        }
+        self.tabs.remove(k);
+        if self.tab > k {
+            self.tab -= 1;
+        }
+    }
+
+    /// The tab strip: every tab's name and how far it is.
+    pub fn tab_infos(&self) -> Vec<TabInfo> {
+        (0..self.tabs.len())
+            .map(|k| {
+                let (phase, name, tracks, link, running) = if k == self.tab {
+                    (self.phase, &self.name, &self.tracks, &self.running_link, &self.link.text)
+                } else {
+                    let t = &self.tabs[k];
+                    (t.phase, &t.name, &t.tracks, &t.running_link, &t.link.text)
+                };
+                let label = if !name.is_empty() {
+                    name.to_uppercase()
+                } else if phase != Phase::Idle && !link.is_empty() {
+                    self.lang.t("READING…", "LEYENDO…").into()
+                } else if !running.trim().is_empty() {
+                    self.lang.t("NEW LINK", "LINK NUEVO").into()
+                } else {
+                    self.lang.t("NEW TAB", "PESTAÑA NUEVA").into()
+                };
+                let n = tracks.iter().filter(|t| t.in_run || t.state == TState::Done || t.state == TState::Missing).count();
+                let progress = if n == 0 { 0.0 } else { tracks.iter().map(|t| if t.in_run { t.progress() } else if matches!(t.state, TState::Done | TState::Missing) { 1.0 } else { 0.0 }).sum::<f32>() / n as f32 };
+                TabInfo { label, phase, progress }
+            })
+            .collect()
     }
 
     /// STOP: the downloads end, and the finished tracks are still converted and kept. A second
@@ -526,7 +822,7 @@ impl State {
             r.stop();
         }
         // Events of the stopped run are ignored from here on.
-        self.run_id += 1;
+        self.run_id = self.fresh_id();
         self.countdown = None;
         self.save_session();
         self.phase = Phase::Idle;
@@ -542,7 +838,7 @@ impl State {
         if self.phase == Phase::Running {
             self.save_session();
         }
-        self.run_id += 1;
+        self.run_id = self.fresh_id();
         self.reset_run();
         self.phase = Phase::Idle;
         self.show_history = false;
@@ -1607,6 +1903,47 @@ mod tests {
         assert!(spotify_link("https://open.spotify.com/artist/4aawyAB9vmqN3uQ7FjRGTy").is_none());
         assert!(spotify_link("https://example.com/playlist/4aawyAB9vmqN3uQ7FjRGTy").is_none());
         assert!(spotify_link("hello").is_none());
+    }
+
+    #[test]
+    fn tabs_keep_their_own_run_and_take_their_own_events() {
+        let mut s = State::new(None);
+        s.link.replace_text("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M");
+        s.phase = Phase::Running;
+        s.run_id = 7;
+        s.new_tab();
+        assert_eq!(s.tab, 1);
+        assert_eq!(s.phase, Phase::Idle, "a new tab starts empty");
+        assert!(s.link.text.is_empty());
+        s.link.replace_text("https://soundcloud.com/forss/flickermood");
+        s.run_id = 8;
+        s.phase = Phase::Running;
+        // The real run's events, as job 7: they go to the first tab, which is not open.
+        for line in include_str!("../tests/fixtures/real-run.jsonl").lines() {
+            let mut e = backend::parse(line).unwrap();
+            e.job = 7;
+            s.engine_event(1, e);
+        }
+        assert!(s.tracks.is_empty(), "the open tab got none of them");
+        assert_eq!(s.tab_infos()[0].phase, Phase::Done);
+        assert_eq!(s.tab_infos()[1].phase, Phase::Running);
+        s.switch_tab(0);
+        assert_eq!((s.phase, s.tracks.len(), s.files), (Phase::Done, 3, 3));
+        assert!(s.link.text.contains("spotify"));
+        assert!(s.tab_infos()[0].label.len() > 0);
+        // Events of an unknown or old run go nowhere.
+        let mut e = backend::parse(r#"{"ev":"phase","phase":"youtube"}"#).unwrap();
+        e.job = 99;
+        s.engine_event(1, e);
+        s.switch_tab(1);
+        assert!(s.link.text.contains("soundcloud"));
+        assert_eq!(s.stage, "");
+        // Closing the open tab opens its neighbour.
+        s.close_tab(1);
+        assert_eq!((s.tabs.len(), s.tab, s.tracks.len()), (1, 0, 3));
+        // The last tab is emptied, not removed.
+        s.close_tab(0);
+        assert_eq!((s.tabs.len(), s.phase, s.tracks.len()), (1, Phase::Idle, 0));
     }
 
     #[test]

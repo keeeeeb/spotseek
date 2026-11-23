@@ -41,8 +41,12 @@
 
 ## The app
 
-- `ui/` is the app window (Rust, Rune). It runs the engine (`engine/`, Rust) as its backend:
-  `spotseek-backend --cli <url> -o <dir> --events --ask [--manual]`. See the README, "The app window".
+- `ui/` is the app window (Rust, Rune). It runs the engine (`engine/`, Rust) as its backend, one
+  process for every tab: `spotseek-backend --serve --events`; each tab's link is a job on it
+  (one Soulseek session: an account can be online in one place only). See the README, "The app window".
+- Tabs: the open tab's fields live in `State`, the others in `State::tabs` (`tab_fields!` in
+  `ui/src/model.rs` lists them); `with_tab` swaps one in to apply its events. A new per-link
+  field of `State` goes in that list.
 - The Go code (`main.go`, `internal/`, `cmd/`) is only the Mixxx server now; the app does not use it.
 - Headless screens: `cd ui && cargo run --release -- --snap out.png --scene <name>` (`--list-scenes`).
   `SPOTSEEK_LANG=es` renders the Spanish text.
